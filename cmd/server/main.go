@@ -1137,6 +1137,12 @@ func main() {
 			timeStr = m.ScheduledAt.Format("03:04 PM")
 		}
 
+		teamCount := len(lineups)
+		layoutVs := "* Large centered \"VS\"\n"
+		if teamCount > 2 {
+			layoutVs = fmt.Sprintf("* Multi-team triangular or round-robin division showing all %d teams prominently with VS dividers between them\n", teamCount)
+		}
+
 		prompt := fmt.Sprintf(
 			"Create a premium modern %s match poster for a casual recreational game.\n\n"+
 				"**STYLE:**\n\n"+
@@ -1153,14 +1159,13 @@ func main() {
 				"VENUE: %s\n\n"+
 				"**LAYOUT:**\n\n"+
 				"* \"MATCH DAY\" at the top\n"+
-				"* Teams prominently displayed with players underneath\n"+
-				"* Large centered \"VS\"\n"+
+				"* All %d teams prominently displayed with players underneath\n"+
+				"%s"+
 				"* Date, time and venue at the bottom\n"+
-				"* Adapt layout for 2 or 3 teams\n"+
 				"* Strong hierarchy and mobile readability\n\n"+
 				"**IMPORTANT:**\n"+
-				"Use exact provided text only. Do not invent players, scores, logos, sponsors, or extra information. No professional club branding.",
-			sportLower, sportLower, sportLower, matchSection, dateStr, timeStr, venueName,
+				"Feature ALL %d teams listed in the MATCH section. Use exact provided text only. Do not invent players, scores, logos, sponsors, or extra information. No professional club branding.",
+			sportLower, sportLower, sportLower, matchSection, dateStr, timeStr, venueName, teamCount, layoutVs, teamCount,
 		)
 
 		imgBytes, genErr := imageClient.Generate(c.Request.Context(), prompt)
