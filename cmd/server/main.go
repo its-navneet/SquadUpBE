@@ -890,14 +890,12 @@ func main() {
 		}
 		type teamOut struct {
 			models.Team
-			Members []models.TeamMember `json:"members"`
 			Members []memberOut `json:"members"`
 		}
 		out := make([]teamOut, 0, len(ts))
 		for _, t := range ts {
 			var mem []models.TeamMember
 			db.Where("team_id=?", t.ID).Find(&mem)
-			out = append(out, teamOut{t, mem})
 			uids := make([]uuid.UUID, 0, len(mem))
 			for _, m := range mem {
 				uids = append(uids, m.UserID)
