@@ -1,0 +1,3 @@
+-- Reference migration. V1 currently uses GORM AutoMigrate on startup.
+-- Create database separately:
+-- CREATE DATABASE squadup;

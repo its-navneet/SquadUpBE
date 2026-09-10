@@ -1,0 +1,88 @@
+package group
+
+import (
+	"errors"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"squadup/backend/internal/models"
+)
+
+type Service struct{ DB *gorm.DB }
+
+func New(db *gorm.DB) *Service { return &Service{db} }
+func (s *Service) Create(name, desc, city, privacy string, sportID, owner uuid.UUID) (models.Group, error) {
+	g := models.Group{Name: name, Description: desc, City: city, Privacy: privacy, SportID: sportID, OwnerID: owner, InviteCode: uuid.NewString()}
+	if e := s.DB.Create(&g).Error; e != nil {
+		return g, e
+	}
+	m := models.GroupMember{GroupID: g.ID, UserID: owner, Role: "OWNER", Status: "ACTIVE"}
+	return g, s.DB.Create(&m).Error
+}
+func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinRequest, error) {
+	var g models.Group
+	r := models.GroupJoinRequest{GroupID: g.ID, UserID: uid, Status: "PENDING"}
+	e := s.DB.Transaction(func(tx *gorm.DB) error {
+		// Lock the group row so concurrent taps cannot create duplicate requests.
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("invite_code=?", code).First(&g).Error; e != nil {
+			return e
+		}
+		var c int64
+		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", g.ID, uid).Count(&c)
+		if c > 0 {
+			return errors.New("already a member")
+		}
+		var existing models.GroupJoinRequest
+		if e := tx.Where("group_id=? AND user_id=? AND status='PENDING'", g.ID, uid).Order("created_at ASC").First(&existing).Error; e == nil {
+			r = existing
+			return nil
+		}
+		r = models.GroupJoinRequest{GroupID: g.ID, UserID: uid, Status: "PENDING"}
+		if e := tx.Create(&r).Error; e != nil {
+			return e
+		}
+		var requester models.User
+		tx.First(&requester, uid)
+		var admins []models.GroupMember
+		tx.Where("group_id=? AND status='ACTIVE' AND role IN ?", g.ID, []string{"OWNER", "ADMIN"}).Find(&admins)
+		for _, admin := range admins {
+			requestID, groupID := r.ID, g.ID
+			n := models.Notification{UserID: admin.UserID, GroupID: &groupID, Type: "JOIN_REQUEST", Title: "New join request", Message: requester.Name + " wants to join " + g.Name, EntityType: "GROUP_JOIN_REQUEST", EntityID: &requestID}
+			if e := tx.Create(&n).Error; e != nil {
+				return e
+			}
+		}
+		return nil
+	})
+	if e != nil {
+		return r, e
+	}
+	return r, nil
+}
+func (s *Service) Approve(reqID, adminID uuid.UUID) (models.GroupJoinRequest, error) {
+	var r models.GroupJoinRequest
+	if e := s.DB.First(&r, reqID).Error; e != nil {
+		return r, e
+	}
+	if r.Status != "PENDING" {
+		return r, errors.New("join request has already been reviewed")
+	}
+	var m models.GroupMember
+	if e := s.DB.Where("group_id=? AND user_id=? AND status='ACTIVE'", r.GroupID, adminID).First(&m).Error; e != nil || !(m.Role == "OWNER" || m.Role == "ADMIN") {
+		return r, errors.New("forbidden")
+	}
+	r.Status = "APPROVED"
+	r.ReviewedByID = &adminID
+	if e := s.DB.Save(&r).Error; e != nil {
+		return r, e
+	}
+	mem := models.GroupMember{GroupID: r.GroupID, UserID: r.UserID, Role: "MEMBER", Status: "ACTIVE"}
+	if e := s.DB.Where("group_id=? AND user_id=?", mem.GroupID, mem.UserID).FirstOrCreate(&mem).Error; e != nil {
+		return r, e
+	}
+	var g models.Group
+	s.DB.First(&g, r.GroupID)
+	groupID := r.GroupID
+	n := models.Notification{UserID: r.UserID, GroupID: &groupID, Type: "JOIN_APPROVED", Title: "Join request approved", Message: "You can now view and join " + g.Name, EntityType: "GROUP", EntityID: &groupID}
+	return r, s.DB.Create(&n).Error
+}

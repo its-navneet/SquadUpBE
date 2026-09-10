@@ -1,0 +1,13 @@
+# Generated images and uploads
+uploads/
+**/uploads/**
+
+# Binary
+/server
+
+# Environment
+.env
+
+# macOS metadata
+.DS_Store
+
