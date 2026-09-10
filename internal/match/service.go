@@ -283,17 +283,60 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 		return err
 	}
 
+	// 1. Preserve or compute accurate player attendance counts
+	existingAttendance := make(map[uuid.UUID]struct{ Count, Total int })
+	var existingStats []models.PlayerStatistics
+	if err := tx.Where("group_id = ?", groupID).Find(&existingStats).Error; err == nil {
+		for _, es := range existingStats {
+			existingAttendance[es.UserID] = struct{ Count, Total int }{
+				Count: es.AttendanceCount,
+				Total: es.AttendanceTotal,
+			}
+		}
+	}
+	type attAgg struct {
+		UserID uuid.UUID `gorm:"column:user_id"`
+		Going  int       `gorm:"column:going"`
+		Total  int       `gorm:"column:total"`
+	}
+	var atts []attAgg
+	_ = tx.Raw(`
+		SELECT a.user_id, 
+		       COUNT(CASE WHEN a.status = 'GOING' THEN 1 END) as going,
+		       COUNT(*) as total
+		FROM attendances a
+		INNER JOIN matches m ON a.match_id = m.id
+		WHERE m.group_id = ?
+		GROUP BY a.user_id
+	`, groupID).Scan(&atts).Error
+	for _, at := range atts {
+		existingAttendance[at.UserID] = struct{ Count, Total int }{
+			Count: at.Going,
+			Total: at.Total,
+		}
+	}
+
 	statsMap := make(map[uuid.UUID]*models.PlayerStatistics)
 	getStat := func(uid uuid.UUID) *models.PlayerStatistics {
 		if st, ok := statsMap[uid]; ok {
 			return st
 		}
+		att := existingAttendance[uid]
 		st := &models.PlayerStatistics{
-			GroupID: groupID,
-			UserID:  uid,
+			GroupID:         groupID,
+			UserID:          uid,
+			AttendanceCount: att.Count,
+			AttendanceTotal: att.Total,
 		}
 		statsMap[uid] = st
 		return st
+	}
+
+	// Ensure all members with attendance records have a statistics entry
+	for uid, att := range existingAttendance {
+		st := getStat(uid)
+		st.AttendanceCount = att.Count
+		st.AttendanceTotal = att.Total
 	}
 
 	for _, m := range matches {
@@ -305,11 +348,35 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 			getStat(*res.MVPUserID).MVP++
 		}
 
+		var events []models.MatchEvent
+		if err := tx.Where("match_id = ?", m.ID).Find(&events).Error; err != nil {
+			continue
+		}
+		for _, ev := range events {
+			switch ev.EventType {
+			case "GOAL":
+				if ev.PlayerID != nil {
+					getStat(*ev.PlayerID).Goals++
+				}
+				if ev.AssistPlayerID != nil {
+					getStat(*ev.AssistPlayerID).Assists++
+				}
+			case "YELLOW_CARD":
+				if ev.PlayerID != nil {
+					getStat(*ev.PlayerID).YellowCards++
+				}
+			case "RED_CARD":
+				if ev.PlayerID != nil {
+					getStat(*ev.PlayerID).RedCards++
+				}
+			}
+		}
+
 		var teams []models.Team
 		if err := tx.Where("match_id = ?", m.ID).Order("created_at ASC, id ASC").Find(&teams).Error; err != nil {
 			continue
 		}
-		if len(teams) >= 2 {
+		if len(teams) == 2 {
 			var t0Members, t1Members []models.TeamMember
 			tx.Where("team_id = ?", teams[0].ID).Find(&t0Members)
 			tx.Where("team_id = ?", teams[1].ID).Find(&t1Members)
@@ -343,28 +410,43 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 					st.CleanSheets++
 				}
 			}
-		}
-
-		var events []models.MatchEvent
-		if err := tx.Where("match_id = ?", m.ID).Find(&events).Error; err != nil {
-			continue
-		}
-		for _, ev := range events {
-			switch ev.EventType {
-			case "GOAL":
-				if ev.PlayerID != nil {
-					getStat(*ev.PlayerID).Goals++
+		} else if len(teams) > 2 {
+			// Multi-team scoring: rank teams by goals scored in events
+			teamScores := make(map[uuid.UUID]int)
+			for _, ev := range events {
+				if ev.EventType == "GOAL" && ev.TeamID != nil {
+					teamScores[*ev.TeamID]++
 				}
-				if ev.AssistPlayerID != nil {
-					getStat(*ev.AssistPlayerID).Assists++
+			}
+			maxScore := -1
+			for _, t := range teams {
+				sc := teamScores[t.ID]
+				if sc > maxScore {
+					maxScore = sc
 				}
-			case "YELLOW_CARD":
-				if ev.PlayerID != nil {
-					getStat(*ev.PlayerID).YellowCards++
+			}
+			topCount := 0
+			for _, t := range teams {
+				if teamScores[t.ID] == maxScore {
+					topCount++
 				}
-			case "RED_CARD":
-				if ev.PlayerID != nil {
-					getStat(*ev.PlayerID).RedCards++
+			}
+			for _, t := range teams {
+				var members []models.TeamMember
+				tx.Where("team_id = ?", t.ID).Find(&members)
+				sc := teamScores[t.ID]
+				isWinner := sc == maxScore && topCount == 1
+				isDraw := sc == maxScore && topCount > 1
+				for _, mem := range members {
+					st := getStat(mem.UserID)
+					st.Matches++
+					if isWinner {
+						st.Wins++
+					} else if isDraw {
+						st.Draws++
+					} else {
+						st.Losses++
+					}
 				}
 			}
 		}

@@ -67,4 +67,11 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
-func UserID(c *gin.Context) string { v, _ := c.Get("userID"); return v.(string) }
+func UserID(c *gin.Context) string {
+	if v, exists := c.Get("userID"); exists && v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}

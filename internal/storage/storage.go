@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"squadup/backend/internal/config"
 
@@ -104,6 +105,18 @@ func (b *B2Storage) Upload(ctx context.Context, key string, data []byte, content
 		return fmt.Sprintf("%s/%s", b.publicURL, key), nil
 	}
 
+	// For private buckets without public URL, generate a presigned GET URL valid for 7 days
+	presignClient := s3.NewPresignClient(b.client)
+	presignReq, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(b.bucketName),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = 7 * 24 * time.Hour
+	})
+	if err == nil && presignReq != nil && presignReq.URL != "" {
+		return presignReq.URL, nil
+	}
+
 	// Standard S3 URL for Backblaze B2 path-style: https://<endpoint>/<bucket>/<key>
 	cleanEndpoint := strings.TrimRight(b.endpoint, "/")
 	return fmt.Sprintf("%s/%s/%s", cleanEndpoint, b.bucketName, key), nil
@@ -141,7 +154,11 @@ func NewLocalStorage(baseDir, baseURL string) *LocalStorage {
 
 func (l *LocalStorage) Upload(_ context.Context, key string, data []byte, _ string) (string, error) {
 	key = strings.TrimLeft(key, "/")
-	targetPath := filepath.Join(l.baseDir, key)
+	cleanBase := filepath.Clean(l.baseDir)
+	targetPath := filepath.Clean(filepath.Join(cleanBase, key))
+	if !strings.HasPrefix(targetPath, cleanBase+string(filepath.Separator)) && targetPath != cleanBase {
+		return "", fmt.Errorf("invalid path traversal in key: %s", key)
+	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return "", err
 	}
@@ -157,7 +174,11 @@ func (l *LocalStorage) Upload(_ context.Context, key string, data []byte, _ stri
 
 func (l *LocalStorage) Delete(_ context.Context, key string) error {
 	key = strings.TrimLeft(key, "/")
-	targetPath := filepath.Join(l.baseDir, key)
+	cleanBase := filepath.Clean(l.baseDir)
+	targetPath := filepath.Clean(filepath.Join(cleanBase, key))
+	if !strings.HasPrefix(targetPath, cleanBase+string(filepath.Separator)) && targetPath != cleanBase {
+		return fmt.Errorf("invalid path traversal in key: %s", key)
+	}
 	return os.Remove(targetPath)
 }
 

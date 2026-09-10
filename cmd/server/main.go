@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"math"
@@ -63,6 +68,7 @@ func main() {
 	}
 
 	r := gin.Default()
+	_ = r.SetTrustedProxies(nil)
 	r.Use(cors(cfg.CORSOrigins))
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.Static("/uploads", "./uploads")
@@ -80,6 +86,10 @@ func main() {
 
 	api.GET("/matches/:id/poster-image", func(c *gin.Context) {
 		mid := c.Param("id")
+		if _, err := uuid.Parse(mid); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid match id"})
+			return
+		}
 		filePath := filepath.Join("uploads", "posters", fmt.Sprintf("%s.png", mid))
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "poster image not found"})
@@ -116,18 +126,18 @@ func main() {
 		}
 		ext, ok := validTypes[contentType]
 		if !ok {
-			hdrExt := strings.ToLower(filepath.Ext(header.Filename))
-			if hdrExt == ".jpg" || hdrExt == ".jpeg" {
-				ext = ".jpg"
-				contentType = "image/jpeg"
-			} else if hdrExt == ".png" {
-				ext = ".png"
-				contentType = "image/png"
-			} else if hdrExt == ".webp" {
-				ext = ".webp"
-				contentType = "image/webp"
-			} else {
-				c.JSON(400, gin.H{"error": "only JPEG, PNG, WebP or GIF images are supported"})
+			c.JSON(400, gin.H{"error": "only genuine JPEG, PNG, WebP or GIF images are supported"})
+			return
+		}
+
+		if contentType == "image/webp" {
+			if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+				c.JSON(400, gin.H{"error": "corrupted or invalid WebP image data"})
+				return
+			}
+		} else {
+			if _, _, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+				c.JSON(400, gin.H{"error": "corrupted or invalid image data"})
 				return
 			}
 		}
@@ -259,10 +269,6 @@ func main() {
 			ProfilePhotoURL *string  `json:"profile_photo_url"`
 			Position        *string  `json:"position"`
 			KitNumber       *int     `json:"kit_number"`
-			CareerMatches   *int     `json:"career_matches"`
-			CareerGoals     *int     `json:"career_goals"`
-			CareerAssists   *int     `json:"career_assists"`
-			CareerMVPs      *int     `json:"career_mvps"`
 		}
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -300,18 +306,6 @@ func main() {
 		}
 		if in.KitNumber != nil {
 			updates["kit_number"] = *in.KitNumber
-		}
-		if in.CareerMatches != nil {
-			updates["career_matches"] = *in.CareerMatches
-		}
-		if in.CareerGoals != nil {
-			updates["career_goals"] = *in.CareerGoals
-		}
-		if in.CareerAssists != nil {
-			updates["career_assists"] = *in.CareerAssists
-		}
-		if in.CareerMVPs != nil {
-			updates["career_mvps"] = *in.CareerMVPs
 		}
 		if len(updates) > 0 {
 			if e := db.Model(&u).Updates(updates).Error; e != nil {
@@ -433,14 +427,26 @@ func main() {
 			return
 		}
 
+		var g models.Group
+		if db.First(&g, gid).Error != nil {
+			c.JSON(404, err("group not found"))
+			return
+		}
+
+		// Only the group OWNER can promote to ADMIN or demote an existing ADMIN
+		if targetMember.Role == "ADMIN" || newRole == "ADMIN" {
+			if g.OwnerID != actorUID {
+				c.JSON(403, err("only the group owner can promote or demote admins"))
+				return
+			}
+		}
+
 		targetMember.Role = newRole
 		if e := db.Save(&targetMember).Error; e != nil {
 			c.JSON(500, err("failed to update member role"))
 			return
 		}
 
-		var g models.Group
-		db.First(&g, gid)
 		groupName := g.Name
 		if groupName == "" {
 			groupName = "the squad"
@@ -603,7 +609,13 @@ func main() {
 		c.JSON(200, gin.H{"success": true, "data": r})
 	})
 	sec.GET("/groups/:id/ratings/:userId", func(c *gin.Context) {
-		avg, n, e := rs.Average(mustUUID(c.Param("id")), mustUUID(c.Param("userId")))
+		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
+		avg, n, e := rs.Average(gid, mustUUID(c.Param("userId")))
 		if e != nil {
 			c.JSON(500, err(e.Error()))
 			return
@@ -760,11 +772,30 @@ func main() {
 			ReadAt time.Time   `json:"read_at"`
 		}
 
+		var members []models.GroupMember
+		db.Where("group_id=? AND status='ACTIVE'", gid).Find(&members)
+
+		// Batch lookup all referenced user profiles in a single query
+		userIDs := make([]uuid.UUID, 0, len(reads)+len(members))
+		for _, r := range reads {
+			userIDs = append(userIDs, r.UserID)
+		}
+		for _, mb := range members {
+			userIDs = append(userIDs, mb.UserID)
+		}
+		userMap := make(map[uuid.UUID]models.User)
+		if len(userIDs) > 0 {
+			var users []models.User
+			db.Where("id IN ?", userIDs).Find(&users)
+			for _, u := range users {
+				userMap[u.ID] = u
+			}
+		}
+
 		var seenBy []readReceiptItem
 		readUserMap := make(map[uuid.UUID]bool)
 		for _, r := range reads {
-			var u models.User
-			if db.First(&u, r.UserID).Error == nil {
+			if u, ok := userMap[r.UserID]; ok {
 				seenBy = append(seenBy, readReceiptItem{
 					User:   u,
 					ReadAt: r.ReadAt,
@@ -773,16 +804,13 @@ func main() {
 			}
 		}
 
-		var members []models.GroupMember
-		db.Where("group_id=?", gid).Find(&members)
 		var unseenBy []models.User
 		for _, mb := range members {
 			if mb.UserID == msg.SenderID {
 				continue
 			}
 			if !readUserMap[mb.UserID] {
-				var u models.User
-				if db.First(&u, mb.UserID).Error == nil {
+				if u, ok := userMap[mb.UserID]; ok {
 					unseenBy = append(unseenBy, u)
 				}
 			}
@@ -811,6 +839,10 @@ func main() {
 		var in struct{ Content string }
 		if c.BindJSON(&in) != nil || strings.TrimSpace(in.Content) == "" {
 			c.JSON(400, err("message cannot be empty"))
+			return
+		}
+		if len(in.Content) > 2000 {
+			c.JSON(400, err("message exceeds maximum limit of 2000 characters"))
 			return
 		}
 		uid := mustUUID(auth.UserID(c))
@@ -1029,6 +1061,11 @@ func main() {
 	})
 	sec.GET("/groups/:id/venues", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
 		var vs []models.Venue
 		db.Where("group_id=?", gid).Find(&vs)
 		c.JSON(200, gin.H{"success": true, "data": vs})
@@ -1055,7 +1092,10 @@ func main() {
 			return
 		}
 		var g models.Group
-		db.First(&g, gid)
+		if e := db.First(&g, gid).Error; e != nil {
+			c.JSON(404, err("group not found"))
+			return
+		}
 		t, e := time.Parse(time.RFC3339, in.ScheduledAt)
 		if e != nil {
 			t = time.Now().Add(24 * time.Hour)
@@ -1075,6 +1115,11 @@ func main() {
 	})
 	sec.GET("/groups/:id/matches", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
 		var msx []models.Match
 		db.Where("group_id=?", gid).Order("scheduled_at DESC").Find(&msx)
 		c.JSON(200, gin.H{"success": true, "data": msx})
@@ -1759,7 +1804,10 @@ func main() {
 	sec.POST("/matches/:id/finalize", func(c *gin.Context) {
 		mid := mustUUID(c.Param("id"))
 		var m models.Match
-		db.First(&m, mid)
+		if e := db.First(&m, mid).Error; e != nil {
+			c.JSON(404, err("match not found"))
+			return
+		}
 		if !mustAdmin(db, m.GroupID, mustUUID(auth.UserID(c))) {
 			c.JSON(403, err("admin only"))
 			return
@@ -1786,6 +1834,11 @@ func main() {
 	})
 	sec.GET("/groups/:id/leaderboard", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
 		var st []models.PlayerStatistics
 		db.Where("group_id=?", gid).Order("goals DESC,assists DESC,matches DESC").Limit(50).Find(&st)
 		c.JSON(200, gin.H{"success": true, "data": st})
@@ -1899,8 +1952,19 @@ func notifyGroupMembers(db *gorm.DB, groupID uuid.UUID, excludeUserID *uuid.UUID
 }
 
 func teamName(i int) string {
-	return []string{"Red", "Blue", "Green", "Yellow", "Orange", "Purple"}[i%6]
+	names := []string{"Red", "Blue", "Green", "Yellow", "Orange", "Purple"}
+	if i < len(names) {
+		return names[i]
+	}
+	return fmt.Sprintf("Team %d", i+1)
 }
-func teamCode(i int) string { return []string{"RED", "BLU", "GRN", "YEL", "ORG", "PUR"}[i%6] }
+
+func teamCode(i int) string {
+	codes := []string{"RED", "BLU", "GRN", "YEL", "ORG", "PUR"}
+	if i < len(codes) {
+		return codes[i]
+	}
+	return fmt.Sprintf("T%d", i+1)
+}
 
 var _ = http.MethodGet

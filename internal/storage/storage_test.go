@@ -59,3 +59,21 @@ func TestNewFallbackWhenUnconfigured(t *testing.T) {
 		t.Errorf("Should fall back to LocalStorage when B2 credentials are empty")
 	}
 }
+
+func TestLocalStoragePathTraversal(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "squadup_storage_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	s := NewLocalStorage(tempDir, "")
+	_, err = s.Upload(context.Background(), "../outside.txt", []byte("bad"), "text/plain")
+	if err == nil {
+		t.Errorf("Expected error on path traversal upload, got nil")
+	}
+	err = s.Delete(context.Background(), "../outside.txt")
+	if err == nil {
+		t.Errorf("Expected error on path traversal delete, got nil")
+	}
+}

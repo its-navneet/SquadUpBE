@@ -2,8 +2,10 @@ package ws
 
 import (
 	"encoding/json"
-	"github.com/gorilla/websocket"
 	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Client struct {
@@ -50,6 +52,7 @@ func (h *Hub) Broadcast(key string, e Event) {
 	h.mu.RUnlock()
 	for _, c := range cs {
 		c.Mu.Lock()
+		_ = c.Conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 		_ = c.Conn.WriteMessage(websocket.TextMessage, b)
 		c.Mu.Unlock()
 	}

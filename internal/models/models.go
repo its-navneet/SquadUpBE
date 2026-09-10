@@ -126,8 +126,8 @@ type Group struct {
 type GroupMember struct {
 	Base
 
-	GroupID  uuid.UUID `gorm:"type:uuid;index;not null" json:"group_id"`
-	UserID   uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	GroupID  uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_group_member" json:"group_id"`
+	UserID   uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_group_member" json:"user_id"`
 	Role     string    `gorm:"default:'MEMBER'" json:"role"`
 	Status   string    `gorm:"default:'ACTIVE'" json:"status"`
 	JoinedAt time.Time `json:"joined_at"`
@@ -153,13 +153,13 @@ type GroupJoinRequest struct {
 type ChatMessage struct {
 	Base
 
-	GroupID          uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
-	SenderID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"sender_id"`
-	MessageType      string     `gorm:"default:'TEXT'" json:"message_type"`
-	Content          string     `json:"content"`
-	MediaURL         string     `json:"media_url,omitempty"`
-	ReplyToMessageID *uuid.UUID `gorm:"type:uuid" json:"reply_to_message_id,omitempty"`
-	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
+	GroupID          uuid.UUID      `gorm:"type:uuid;index;not null" json:"group_id"`
+	SenderID         uuid.UUID      `gorm:"type:uuid;index;not null" json:"sender_id"`
+	MessageType      string         `gorm:"default:'TEXT'" json:"message_type"`
+	Content          string         `json:"content"`
+	MediaURL         string         `json:"media_url,omitempty"`
+	ReplyToMessageID *uuid.UUID     `gorm:"type:uuid" json:"reply_to_message_id,omitempty"`
+	DeletedAt        gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
 // ============================================================
@@ -224,8 +224,8 @@ type Match struct {
 type Attendance struct {
 	Base
 
-	MatchID     uuid.UUID `gorm:"type:uuid;index;not null" json:"match_id"`
-	UserID      uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	MatchID     uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_attendance_match_user" json:"match_id"`
+	UserID      uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_attendance_match_user" json:"user_id"`
 	Status      string    `gorm:"not null" json:"status"`
 	RespondedAt time.Time `json:"responded_at"`
 }
@@ -250,8 +250,8 @@ type Team struct {
 type TeamMember struct {
 	Base
 
-	TeamID       uuid.UUID `gorm:"type:uuid;index;not null" json:"team_id"`
-	UserID       uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	TeamID       uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_team_member" json:"team_id"`
+	UserID       uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_team_member" json:"user_id"`
 	PositionName string    `json:"position_name"`
 }
 
@@ -263,9 +263,9 @@ type MatchEvent struct {
 	Base
 
 	MatchID          uuid.UUID  `gorm:"type:uuid;index;not null" json:"match_id"`
-	TeamID           *uuid.UUID `gorm:"type:uuid" json:"team_id,omitempty"`
-	PlayerID         *uuid.UUID `gorm:"type:uuid" json:"player_id,omitempty"`
-	AssistPlayerID   *uuid.UUID `gorm:"type:uuid" json:"assist_player_id,omitempty"`
+	TeamID           *uuid.UUID `gorm:"type:uuid;index" json:"team_id,omitempty"`
+	PlayerID         *uuid.UUID `gorm:"type:uuid;index" json:"player_id,omitempty"`
+	AssistPlayerID   *uuid.UUID `gorm:"type:uuid;index" json:"assist_player_id,omitempty"`
 	EventType        string     `gorm:"not null" json:"event_type"`
 	MatchTimeSeconds int        `json:"match_time_seconds"`
 	Metadata         string     `gorm:"type:jsonb" json:"metadata,omitempty"`
@@ -279,8 +279,8 @@ type MatchResult struct {
 	Base
 
 	MatchID   uuid.UUID  `gorm:"type:uuid;uniqueIndex;not null" json:"match_id"`
-	HomeScore int        `json:"home_score"`
-	AwayScore int        `json:"away_score"`
+	HomeScore int        `gorm:"default:0" json:"home_score"`
+	AwayScore int        `gorm:"default:0" json:"away_score"`
 	MVPUserID *uuid.UUID `gorm:"type:uuid" json:"mvp_user_id,omitempty"`
 	Notes     string     `json:"notes,omitempty"`
 }
@@ -292,9 +292,9 @@ type MatchResult struct {
 type PlayerRating struct {
 	Base
 
-	GroupID     uuid.UUID `gorm:"type:uuid;index;not null" json:"group_id"`
-	RaterUserID uuid.UUID `gorm:"type:uuid;index;not null" json:"rater_user_id"`
-	RatedUserID uuid.UUID `gorm:"type:uuid;index;not null" json:"rated_user_id"`
+	GroupID     uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_player_rating" json:"group_id"`
+	RaterUserID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_player_rating" json:"rater_user_id"`
+	RatedUserID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_player_rating" json:"rated_user_id"`
 	Overall     float64   `gorm:"not null" json:"overall"`
 }
 
@@ -317,8 +317,8 @@ type PlayerRatingAttribute struct {
 type PlayerStatistics struct {
 	Base
 
-	GroupID         uuid.UUID `gorm:"type:uuid;index;not null" json:"group_id"`
-	UserID          uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	GroupID         uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_group_user_stats" json:"group_id"`
+	UserID          uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_group_user_stats" json:"user_id"`
 	Matches         int       `json:"matches"`
 	Wins            int       `json:"wins"`
 	Losses          int       `json:"losses"`

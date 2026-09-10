@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -162,22 +161,12 @@ func IPKeyExtractor(c *gin.Context) string {
 	return "ip:" + c.ClientIP()
 }
 
-// UserOrIPKeyExtractor extracts userID or token if authenticated, otherwise client IP.
+// UserOrIPKeyExtractor extracts userID if authenticated, otherwise client IP.
 func UserOrIPKeyExtractor(c *gin.Context) string {
 	if v, exists := c.Get("userID"); exists {
 		if uid, ok := v.(string); ok && uid != "" {
 			return "user:" + uid
 		}
-	}
-	h := c.GetHeader("Authorization")
-	if strings.HasPrefix(h, "Bearer ") {
-		tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-		if tok != "" {
-			return "tok:" + tok
-		}
-	}
-	if q := strings.TrimSpace(c.Query("token")); q != "" {
-		return "tok:" + q
 	}
 	return "ip:" + c.ClientIP()
 }
