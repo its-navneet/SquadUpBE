@@ -60,4 +60,3 @@ func TestUserJSONSerialization(t *testing.T) {
 		t.Errorf("expected preferred_foot to be Right in JSON output, got %v", m["preferred_foot"])
 	}
 }
-

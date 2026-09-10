@@ -84,10 +84,6 @@ func main() {
 	})
 	api.POST("/auth/register", authLimitMiddleware, func(c *gin.Context) {
 		var in struct {
-			Name, Email, Password string
-			Age                   int
-			HeightCM, WeightKG    float64
-			PreferredFoot, Bio    string
 			Name          string  `json:"name"`
 			Email         string  `json:"email"`
 			Password      string  `json:"password"`
