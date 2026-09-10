@@ -88,6 +88,14 @@ func main() {
 			Age                   int
 			HeightCM, WeightKG    float64
 			PreferredFoot, Bio    string
+			Name          string  `json:"name"`
+			Email         string  `json:"email"`
+			Password      string  `json:"password"`
+			Age           int     `json:"age"`
+			HeightCM      float64 `json:"height_cm"`
+			WeightKG      float64 `json:"weight_kg"`
+			PreferredFoot string  `json:"preferred_foot"`
+			Bio           string  `json:"bio"`
 		}
 		if c.BindJSON(&in) != nil || in.Name == "" || len(in.Password) < 8 {
 			c.JSON(400, err("name/email/password(8+) required"))
@@ -128,6 +136,56 @@ func main() {
 		if e := db.First(&u, uid).Error; e != nil {
 			c.JSON(404, err("user not found"))
 			return
+		}
+		c.JSON(200, gin.H{"success": true, "data": u})
+	})
+	sec.PUT("/users/me", func(c *gin.Context) {
+		uid := mustUUID(auth.UserID(c))
+		var in struct {
+			Name          *string  `json:"name"`
+			Age           *int     `json:"age"`
+			HeightCM      *float64 `json:"height_cm"`
+			WeightKG      *float64 `json:"weight_kg"`
+			PreferredFoot *string  `json:"preferred_foot"`
+			Bio           *string  `json:"bio"`
+		}
+		if c.BindJSON(&in) != nil {
+			c.JSON(400, err("invalid request"))
+			return
+		}
+		var u models.User
+		if e := db.First(&u, uid).Error; e != nil {
+			c.JSON(404, err("user not found"))
+			return
+		}
+		updates := map[string]interface{}{}
+		if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+			updates["name"] = strings.TrimSpace(*in.Name)
+		}
+		if in.Age != nil {
+			updates["age"] = *in.Age
+		}
+		if in.HeightCM != nil {
+			updates["height_cm"] = *in.HeightCM
+		}
+		if in.WeightKG != nil {
+			updates["weight_kg"] = *in.WeightKG
+		}
+		if in.PreferredFoot != nil {
+			updates["preferred_foot"] = strings.TrimSpace(*in.PreferredFoot)
+		}
+		if in.Bio != nil {
+			updates["bio"] = strings.TrimSpace(*in.Bio)
+		}
+		if len(updates) > 0 {
+			if e := db.Model(&u).Updates(updates).Error; e != nil {
+				c.JSON(500, err("failed to update profile"))
+				return
+			}
+			if e := db.First(&u, uid).Error; e != nil {
+				c.JSON(500, err("failed to reload profile"))
+				return
+			}
 		}
 		c.JSON(200, gin.H{"success": true, "data": u})
 	})
@@ -405,16 +463,6 @@ func main() {
 			userName = "A new player"
 		}
 		notifyGroupMembers(db, gid, &request.UserID, "MEMBER_JOINED", "New Squad Member", fmt.Sprintf("%s has joined %s! Welcome them to the squad.", userName, g.Name), "GROUP", &gid)
-		approvedNotif := models.Notification{
-			UserID:     request.UserID,
-			GroupID:    &gid,
-			Type:       "JOIN_APPROVED",
-			Title:      "Request Approved! ⚽",
-			Message:    fmt.Sprintf("Your request to join %s was approved. Welcome to the squad!", g.Name),
-			EntityType: "GROUP",
-			EntityID:   &gid,
-		}
-		db.Create(&approvedNotif)
 		c.JSON(200, gin.H{"success": true, "data": r})
 	})
 	sec.GET("/groups/:id/ratings/:userId", func(c *gin.Context) {
@@ -1208,10 +1256,18 @@ func mustMember(db *gorm.DB, gid, uid uuid.UUID) bool {
 }
 
 func isGroupAdmin(db *gorm.DB, gid, uid uuid.UUID) bool {
+	var g models.Group
+	if db.Select("owner_id").First(&g, gid).Error == nil && g.OwnerID == uid {
+		return true
+	}
 	var m models.GroupMember
 	return db.Where("group_id=? AND user_id=? AND status='ACTIVE' AND role IN ?", gid, uid, []string{"OWNER", "ADMIN"}).First(&m).Error == nil
 }
 func mustAdmin(db *gorm.DB, gid, uid uuid.UUID) bool {
+	var g models.Group
+	if db.Select("owner_id").First(&g, gid).Error == nil && g.OwnerID == uid {
+		return true
+	}
 	var m models.GroupMember
 	if db.Where("group_id=? AND user_id=? AND status='ACTIVE'", gid, uid).First(&m).Error != nil {
 		return false

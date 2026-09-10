@@ -2,10 +2,11 @@ package group
 
 import (
 	"errors"
+	"squadup/backend/internal/models"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"squadup/backend/internal/models"
 )
 
 type Service struct{ DB *gorm.DB }
@@ -43,11 +44,18 @@ func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinReques
 		}
 		var requester models.User
 		tx.First(&requester, uid)
+		adminUserIDs := make(map[uuid.UUID]bool)
+		if g.OwnerID != uuid.Nil {
+			adminUserIDs[g.OwnerID] = true
+		}
 		var admins []models.GroupMember
 		tx.Where("group_id=? AND status='ACTIVE' AND role IN ?", g.ID, []string{"OWNER", "ADMIN"}).Find(&admins)
 		for _, admin := range admins {
+			adminUserIDs[admin.UserID] = true
+		}
+		for adminUID := range adminUserIDs {
 			requestID, groupID := r.ID, g.ID
-			n := models.Notification{UserID: admin.UserID, GroupID: &groupID, Type: "JOIN_REQUEST", Title: "New join request", Message: requester.Name + " wants to join " + g.Name, EntityType: "GROUP_JOIN_REQUEST", EntityID: &requestID}
+			n := models.Notification{UserID: adminUID, GroupID: &groupID, Type: "JOIN_REQUEST", Title: "New join request", Message: requester.Name + " wants to join " + g.Name, EntityType: "GROUP_JOIN_REQUEST", EntityID: &requestID}
 			if e := tx.Create(&n).Error; e != nil {
 				return e
 			}
@@ -83,6 +91,14 @@ func (s *Service) Approve(reqID, adminID uuid.UUID) (models.GroupJoinRequest, er
 	var g models.Group
 	s.DB.First(&g, r.GroupID)
 	groupID := r.GroupID
-	n := models.Notification{UserID: r.UserID, GroupID: &groupID, Type: "JOIN_APPROVED", Title: "Join request approved", Message: "You can now view and join " + g.Name, EntityType: "GROUP", EntityID: &groupID}
+	n := models.Notification{
+		UserID:     r.UserID,
+		GroupID:    &groupID,
+		Type:       "JOIN_APPROVED",
+		Title:      "Request Approved! ⚽",
+		Message:    "Your request to join " + g.Name + " was approved. Welcome to the squad!",
+		EntityType: "GROUP",
+		EntityID:   &groupID,
+	}
 	return r, s.DB.Create(&n).Error
 }
