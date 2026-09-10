@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -39,6 +40,7 @@ func main() {
 	seed(db)
 	as := auth.New(cfg.JWTSecret)
 	hub := ws.New()
+	presence := ws.NewPresenceTracker()
 	gs := group.New(db)
 	rs := rating.New(db)
 	ms := match.New(db, hub)
@@ -598,7 +600,121 @@ func main() {
 			return
 		}
 		hub.Broadcast(gid.String(), ws.Event{Type: "CHAT_MESSAGE", Data: m})
+
+		// Detect mentions of squad members and create in-app notifications
+		go func(content string, senderUID uuid.UUID, groupID uuid.UUID) {
+			var members []models.GroupMember
+			db.Where("group_id=?", groupID).Find(&members)
+			var group models.Group
+			if db.First(&group, groupID).Error != nil {
+				return
+			}
+			var sender models.User
+			if db.First(&sender, senderUID).Error != nil {
+				return
+			}
+
+			var targetUserIDs []uuid.UUID
+			for _, mb := range members {
+				if mb.UserID != senderUID {
+					targetUserIDs = append(targetUserIDs, mb.UserID)
+				}
+			}
+			if len(targetUserIDs) == 0 {
+				return
+			}
+
+			var targets []models.User
+			db.Where("id IN ?", targetUserIDs).Find(&targets)
+
+			contentLower := strings.ToLower(content)
+			for _, target := range targets {
+				targetName := strings.TrimSpace(target.Name)
+				if targetName == "" {
+					continue
+				}
+				targetLower := strings.ToLower(targetName)
+				hasFullName := strings.Contains(contentLower, "@"+targetLower)
+				nameParts := strings.Fields(targetLower)
+				hasFirstName := len(nameParts) > 0 && strings.Contains(contentLower, "@"+nameParts[0])
+
+				if hasFullName || hasFirstName {
+					snippet := content
+					if len(snippet) > 80 {
+						snippet = snippet[:77] + "..."
+					}
+					msg := fmt.Sprintf("%s tagged you in %s: \"%s\"", sender.Name, group.Name, snippet)
+					notif := models.Notification{
+						UserID:     target.ID,
+						GroupID:    &groupID,
+						Type:       "CHAT_MENTION",
+						Title:      "Mentioned in squad chat",
+						Message:    msg,
+						EntityType: "GROUP_CHAT",
+						EntityID:   &groupID,
+					}
+					db.Create(&notif)
+				}
+			}
+		}(in.Content, uid, gid)
+
 		c.JSON(201, gin.H{"success": true, "data": m})
+	})
+	sec.GET("/presence/online", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": gin.H{
+				"online_user_ids": presence.OnlineUserIDs(),
+			},
+		})
+	})
+	sec.GET("/ws/presence", func(c *gin.Context) {
+		uid := mustUUID(auth.UserID(c))
+		if uid == uuid.Nil {
+			c.AbortWithStatus(401)
+			return
+		}
+		up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, e := up.Upgrade(c.Writer, c.Request, nil)
+		if e != nil {
+			return
+		}
+		cl := &ws.Client{Conn: conn, Key: "presence", UserID: uid.String()}
+		hub.Add(cl)
+		defer hub.Remove(cl)
+
+		justCameOnline := presence.Connect(uid.String())
+		if justCameOnline {
+			hub.Broadcast("presence", ws.Event{
+				Type: "USER_ONLINE",
+				Data: gin.H{"user_id": uid.String()},
+			})
+		}
+
+		// Initial sync of all currently active online users
+		syncData, _ := json.Marshal(ws.Event{
+			Type: "PRESENCE_SYNC",
+			Data: gin.H{"online_user_ids": presence.OnlineUserIDs()},
+		})
+		cl.Mu.Lock()
+		_ = conn.WriteMessage(websocket.TextMessage, syncData)
+		cl.Mu.Unlock()
+
+		defer func() {
+			justWentOffline := presence.Disconnect(uid.String())
+			if justWentOffline {
+				hub.Broadcast("presence", ws.Event{
+					Type: "USER_OFFLINE",
+					Data: gin.H{"user_id": uid.String()},
+				})
+			}
+		}()
+
+		for {
+			if _, _, e := conn.ReadMessage(); e != nil {
+				return
+			}
+		}
 	})
 	sec.GET("/ws/groups/:id", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
@@ -615,6 +731,24 @@ func main() {
 		cl := &ws.Client{Conn: conn, Key: gid.String(), UserID: uid.String()}
 		hub.Add(cl)
 		defer hub.Remove(cl)
+
+		justCameOnline := presence.Connect(uid.String())
+		if justCameOnline {
+			hub.Broadcast("presence", ws.Event{
+				Type: "USER_ONLINE",
+				Data: gin.H{"user_id": uid.String()},
+			})
+		}
+		defer func() {
+			justWentOffline := presence.Disconnect(uid.String())
+			if justWentOffline {
+				hub.Broadcast("presence", ws.Event{
+					Type: "USER_OFFLINE",
+					Data: gin.H{"user_id": uid.String()},
+				})
+			}
+		}()
+
 		for {
 			if _, _, e := conn.ReadMessage(); e != nil {
 				return
