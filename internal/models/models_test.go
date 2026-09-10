@@ -60,3 +60,40 @@ func TestUserJSONSerialization(t *testing.T) {
 		t.Errorf("expected preferred_foot to be Right in JSON output, got %v", m["preferred_foot"])
 	}
 }
+
+func TestMatchModelProperties(t *testing.T) {
+	rawJSON := `{
+		"name": "Sunday League Derby",
+		"format": "7v7",
+		"duration_minutes": 60,
+		"team_count": 2,
+		"players_per_team": 7,
+		"max_players": 14,
+		"notes": "Bring black and white bibs",
+		"status": "UPCOMING"
+	}`
+
+	var match models.Match
+	if err := json.Unmarshal([]byte(rawJSON), &match); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if match.Name != "Sunday League Derby" {
+		t.Errorf("expected match name 'Sunday League Derby', got %s", match.Name)
+	}
+	if match.Format != "7v7" {
+		t.Errorf("expected format '7v7', got %s", match.Format)
+	}
+	if match.Status != "UPCOMING" {
+		t.Errorf("expected status 'UPCOMING', got %s", match.Status)
+	}
+	if match.DurationMinutes != 60 {
+		t.Errorf("expected duration 60, got %d", match.DurationMinutes)
+	}
+	if match.TeamCount != 2 {
+		t.Errorf("expected team count 2, got %d", match.TeamCount)
+	}
+	if match.MaxPlayers != 14 {
+		t.Errorf("expected max players 14, got %d", match.MaxPlayers)
+	}
+}

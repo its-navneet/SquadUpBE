@@ -666,8 +666,120 @@ func main() {
 	sec.GET("/matches/:id", func(c *gin.Context) {
 		c.JSON(200, gin.H{"success": true, "data": c.MustGet("match")})
 	})
+	sec.PUT("/matches/:id", func(c *gin.Context) {
+		m := c.MustGet("match").(models.Match)
+		uid := mustUUID(auth.UserID(c))
+		if !mustAdmin(db, m.GroupID, uid) {
+			c.JSON(403, err("admin only"))
+			return
+		}
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("only upcoming matches can be edited"))
+			return
+		}
+		var in struct {
+			Name            string `json:"name"`
+			ScheduledAt     string `json:"scheduled_at"`
+			VenueID         string `json:"venue_id"`
+			Format          string `json:"format"`
+			Notes           string `json:"notes"`
+			DurationMinutes int    `json:"duration_minutes"`
+			TeamCount       int    `json:"team_count"`
+			PlayersPerTeam  int    `json:"players_per_team"`
+			MaxPlayers      int    `json:"max_players"`
+		}
+		if c.BindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
+			c.JSON(400, err("match name required"))
+			return
+		}
+		if in.ScheduledAt != "" {
+			if t, err := time.Parse(time.RFC3339, in.ScheduledAt); err == nil {
+				m.ScheduledAt = t
+			}
+		}
+		m.Name = strings.TrimSpace(in.Name)
+		if in.Format != "" {
+			m.Format = in.Format
+		}
+		if in.DurationMinutes > 0 {
+			m.DurationMinutes = in.DurationMinutes
+		}
+		if in.TeamCount > 0 {
+			m.TeamCount = in.TeamCount
+		}
+		if in.PlayersPerTeam > 0 {
+			m.PlayersPerTeam = in.PlayersPerTeam
+		}
+		if in.MaxPlayers > 0 {
+			m.MaxPlayers = in.MaxPlayers
+		} else if m.TeamCount > 0 && m.PlayersPerTeam > 0 {
+			m.MaxPlayers = m.TeamCount * m.PlayersPerTeam
+		}
+		m.Notes = in.Notes
+		if in.VenueID != "" {
+			vid := mustUUID(in.VenueID)
+			m.VenueID = &vid
+		} else {
+			m.VenueID = nil
+		}
+		if e := db.Save(&m).Error; e != nil {
+			c.JSON(500, err(e.Error()))
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "data": m})
+	})
+	sec.DELETE("/matches/:id", func(c *gin.Context) {
+		m := c.MustGet("match").(models.Match)
+		uid := mustUUID(auth.UserID(c))
+		if !mustAdmin(db, m.GroupID, uid) {
+			c.JSON(403, err("admin only"))
+			return
+		}
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("only upcoming matches can be deleted"))
+			return
+		}
+		txErr := db.Transaction(func(tx *gorm.DB) error {
+			var teams []models.Team
+			if err := tx.Where("match_id = ?", m.ID).Find(&teams).Error; err != nil {
+				return err
+			}
+			teamIDs := make([]uuid.UUID, 0, len(teams))
+			for _, t := range teams {
+				teamIDs = append(teamIDs, t.ID)
+			}
+			if len(teamIDs) > 0 {
+				if err := tx.Where("team_id IN ?", teamIDs).Delete(&models.TeamMember{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("id IN ?", teamIDs).Delete(&models.Team{}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("match_id = ?", m.ID).Delete(&models.Attendance{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("match_id = ?", m.ID).Delete(&models.MatchEvent{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("match_id = ?", m.ID).Delete(&models.MatchResult{}).Error; err != nil {
+				return err
+			}
+			return tx.Delete(&m).Error
+		})
+		if txErr != nil {
+			c.JSON(500, err("could not delete match"))
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "message": "match deleted successfully"})
+	})
 	sec.POST("/matches/:id/attendance", func(c *gin.Context) {
-		mid := mustUUID(c.Param("id"))
+		m := c.MustGet("match").(models.Match)
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("attendance marking is closed for this match"))
+			return
+		}
+		mid := m.ID
 		uid := mustUUID(auth.UserID(c))
 		var in struct {
 			Status string `json:"status"`
@@ -751,6 +863,10 @@ func main() {
 		db.First(&m, mid)
 		if !mustAdmin(db, m.GroupID, mustUUID(auth.UserID(c))) {
 			c.JSON(403, err("admin only"))
+			return
+		}
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("squads can only be generated for upcoming matches"))
 			return
 		}
 		var ax []models.Attendance
