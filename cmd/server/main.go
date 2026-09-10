@@ -1297,6 +1297,18 @@ func main() {
 			c.JSON(500, err("could not record attendance"))
 			return
 		}
+		if st != "GOING" {
+			// If member is no longer GOING, remove them from any generated squads for this upcoming match
+			var match models.Match
+			if err := db.First(&match, mid).Error; err == nil && match.Status == "UPCOMING" {
+				db.Exec(`
+					DELETE FROM team_members 
+					WHERE user_id = ? AND team_id IN (
+						SELECT id FROM teams WHERE match_id = ?
+					)
+				`, uid, mid)
+			}
+		}
 		var u models.User
 		db.First(&u, uid)
 		c.JSON(200, gin.H{"success": true, "data": a, "user": u})
@@ -1357,29 +1369,78 @@ func main() {
 			c.JSON(400, err("squads can only be generated for upcoming matches"))
 			return
 		}
+
+		teamCount := defaultInt(m.TeamCount, 2)
+
+		// 1. Query attendances with status = 'GOING' for this match,
+		// ensuring attendees are active members of the group.
 		var ax []models.Attendance
-		db.Where("match_id=? AND status='GOING'", mid).Find(&ax)
-		ids := []uuid.UUID{}
+		if e := db.Joins("JOIN group_members gm ON gm.user_id = attendances.user_id AND gm.group_id = ? AND gm.status = 'ACTIVE'", m.GroupID).
+			Where("attendances.match_id = ? AND attendances.status = 'GOING'", mid).
+			Order("attendances.responded_at ASC, attendances.created_at ASC").
+			Find(&ax).Error; e != nil {
+			c.JSON(500, err("could not query match attendance"))
+			return
+		}
+
+		if len(ax) == 0 {
+			c.JSON(400, err("No players have RSVP'd 'GOING' yet. Squad generation requires players with confirmed GOING attendance."))
+			return
+		}
+
+		if len(ax) < teamCount {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("At least %d players with 'GOING' attendance are required to generate squads (currently %d).", teamCount, len(ax))})
+			return
+		}
+
+		// If match has MaxPlayers set and more players RSVP'd GOING than capacity,
+		// only divide the first MaxPlayers who confirmed attendance.
+		if m.MaxPlayers > 0 && len(ax) > m.MaxPlayers {
+			ax = ax[:m.MaxPlayers]
+		}
+
+		ids := make([]uuid.UUID, 0, len(ax))
 		for _, a := range ax {
 			ids = append(ids, a.UserID)
 		}
+
 		var us []models.User
-		if len(ids) > 0 {
-			db.Where("id IN ?", ids).Find(&us)
+		db.Where("id IN ?", ids).Find(&us)
+		userMap := make(map[uuid.UUID]models.User, len(us))
+		for _, u := range us {
+			userMap[u.ID] = u
 		}
+
 		ratings := map[uuid.UUID]float64{}
 		for _, u := range us {
 			ratings[u.ID], _, _ = rs.Average(m.GroupID, u.ID)
 		}
-		ps := []team.Player{}
-		for _, u := range us {
-			r := ratings[u.ID]
-			if r == 0 {
-				r = 5
+
+		ps := make([]team.Player, 0, len(ids))
+		for _, uid := range ids {
+			u, ok := userMap[uid]
+			if !ok {
+				continue
 			}
-			ps = append(ps, team.Player{UserID: u.ID, Name: u.Name, Rating: r})
+			r := ratings[uid]
+			if r == 0 {
+				r = 5.0
+			}
+			ps = append(ps, team.Player{
+				UserID:     u.ID,
+				Name:       u.Name,
+				Rating:     r,
+				Position:   u.Position,
+				Goalkeeper: strings.EqualFold(u.Position, "GK") || strings.EqualFold(u.Position, "GOALKEEPER"),
+			})
 		}
-		teams := team.Generate(ps, defaultInt(m.TeamCount, 2))
+
+		if len(ps) < teamCount {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("At least %d active players are required to generate squads (currently %d).", teamCount, len(ps))})
+			return
+		}
+
+		teams := team.Generate(ps, teamCount)
 		tx := db.Begin()
 
 		if tx.Error != nil {
