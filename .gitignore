@@ -4,6 +4,8 @@ uploads/
 
 # Binary
 /server
+/app
+bin/
 
 # Environment
 .env

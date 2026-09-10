@@ -6,12 +6,65 @@ import (
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	JWTSecret   string
-	CORSOrigins string
-	ImageGenURL string
-	ImageGenKey string
+	Port               string
+	DatabaseURL        string
+	JWTSecret          string
+	CORSOrigins        string
+	ImageGenURL        string
+	ImageGenKey        string
+	RateLimitEnabled   bool
+	RateLimitRPS       float64
+	RateLimitBurst     int
+	AuthRateLimitRPM   int
+	AuthRateLimitBurst int
+}
+
+func parseBool(val string, def bool) bool {
+	if val == "" {
+		return def
+	}
+	val = strings.ToLower(val)
+	return val == "true" || val == "1" || val == "yes"
+}
+
+func parseInt(val string, def int) int {
+	if val == "" {
+		return def
+	}
+	var n int
+	for _, ch := range val {
+		if ch < '0' || ch > '9' {
+			return def
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
+}
+
+func parseFloat(val string, def float64) float64 {
+	if val == "" {
+		return def
+	}
+	var n float64
+	var dec float64
+	var inDec bool
+	decDiv := 1.0
+	for _, ch := range val {
+		if ch == '.' {
+			inDec = true
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return def
+		}
+		if inDec {
+			decDiv *= 10
+			dec = dec*10 + float64(ch-'0')
+		} else {
+			n = n*10 + float64(ch-'0')
+		}
+	}
+	return n + (dec / decDiv)
 }
 
 func loadEnvFile(path string) {
@@ -46,12 +99,17 @@ func Load() Config {
 	loadEnvFile("../.env")
 
 	c := Config{
-		Port:        os.Getenv("PORT"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		JWTSecret:   os.Getenv("JWT_SECRET"),
-		CORSOrigins: os.Getenv("CORS_ORIGINS"),
-		ImageGenURL: os.Getenv("IMAGE_GENERATION_URL"),
-		ImageGenKey: os.Getenv("IMAGE_GENERATION_API_KEY"),
+		Port:               os.Getenv("PORT"),
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		JWTSecret:          os.Getenv("JWT_SECRET"),
+		CORSOrigins:        os.Getenv("CORS_ORIGINS"),
+		ImageGenURL:        os.Getenv("IMAGE_GENERATION_URL"),
+		ImageGenKey:        os.Getenv("IMAGE_GENERATION_API_KEY"),
+		RateLimitEnabled:   parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
+		RateLimitRPS:       parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
+		RateLimitBurst:     parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
+		AuthRateLimitRPM:   parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
+		AuthRateLimitBurst: parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
 	}
 	if c.Port == "" {
 		c.Port = "8080"

@@ -12,6 +12,7 @@ import (
 	"squadup/backend/internal/config"
 	"squadup/backend/internal/database"
 	"squadup/backend/internal/group"
+	"squadup/backend/internal/limiter"
 	"squadup/backend/internal/match"
 	"squadup/backend/internal/models"
 	"squadup/backend/internal/rating"
@@ -43,11 +44,34 @@ func main() {
 		cfg.ImageGenURL,
 		cfg.ImageGenKey,
 	)
+
+	var apiLimiter *limiter.Limiter
+	var authLimiter *limiter.Limiter
+	if cfg.RateLimitEnabled {
+		apiLimiter = limiter.New(cfg.RateLimitRPS, cfg.RateLimitBurst, 5*time.Minute, 15*time.Minute)
+		defer apiLimiter.Stop()
+
+		authRatePerSec := float64(cfg.AuthRateLimitRPM) / 60.0
+		authLimiter = limiter.New(authRatePerSec, cfg.AuthRateLimitBurst, 5*time.Minute, 15*time.Minute)
+		defer authLimiter.Stop()
+	}
+
 	r := gin.Default()
 	r.Use(cors(cfg.CORSOrigins))
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.Static("/uploads", "./uploads")
 	api := r.Group("/api")
+	if apiLimiter != nil {
+		api.Use(apiLimiter.Middleware(limiter.UserOrIPKeyExtractor))
+	}
+
+	var authLimitMiddleware gin.HandlerFunc
+	if authLimiter != nil {
+		authLimitMiddleware = authLimiter.Middleware(limiter.IPKeyExtractor)
+	} else {
+		authLimitMiddleware = func(c *gin.Context) { c.Next() }
+	}
+
 	api.GET("/matches/:id/poster-image", func(c *gin.Context) {
 		mid := c.Param("id")
 		filePath := filepath.Join("uploads", "posters", fmt.Sprintf("%s.png", mid))
@@ -58,7 +82,7 @@ func main() {
 		c.Header("Cache-Control", "public, max-age=86400")
 		c.File(filePath)
 	})
-	api.POST("/auth/register", func(c *gin.Context) {
+	api.POST("/auth/register", authLimitMiddleware, func(c *gin.Context) {
 		var in struct {
 			Name, Email, Password string
 			Age                   int
@@ -82,7 +106,7 @@ func main() {
 		tok, _ := as.Token(u.ID.String())
 		c.JSON(201, gin.H{"success": true, "data": gin.H{"token": tok, "user": u}})
 	})
-	api.POST("/auth/login", func(c *gin.Context) {
+	api.POST("/auth/login", authLimitMiddleware, func(c *gin.Context) {
 		var in struct{ Email, Password string }
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
