@@ -884,15 +884,42 @@ func main() {
 			c.JSON(500, err("could not load teams"))
 			return
 		}
+		type memberOut struct {
+			models.TeamMember
+			User *models.User `json:"user,omitempty"`
+		}
 		type teamOut struct {
 			models.Team
 			Members []models.TeamMember `json:"members"`
+			Members []memberOut `json:"members"`
 		}
 		out := make([]teamOut, 0, len(ts))
 		for _, t := range ts {
 			var mem []models.TeamMember
 			db.Where("team_id=?", t.ID).Find(&mem)
 			out = append(out, teamOut{t, mem})
+			uids := make([]uuid.UUID, 0, len(mem))
+			for _, m := range mem {
+				uids = append(uids, m.UserID)
+			}
+			var users []models.User
+			if len(uids) > 0 {
+				db.Where("id IN ?", uids).Find(&users)
+			}
+			uMap := make(map[uuid.UUID]models.User, len(users))
+			for _, u := range users {
+				uMap[u.ID] = u
+			}
+			mList := make([]memberOut, 0, len(mem))
+			for _, m := range mem {
+				var uPtr *models.User
+				if u, ok := uMap[m.UserID]; ok {
+					uCopy := u
+					uPtr = &uCopy
+				}
+				mList = append(mList, memberOut{m, uPtr})
+			}
+			out = append(out, teamOut{t, mList})
 		}
 		c.JSON(200, gin.H{"success": true, "data": out})
 	})
