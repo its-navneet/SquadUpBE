@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"squadup/backend/internal/match"
 	"squadup/backend/internal/models"
 	"squadup/backend/internal/rating"
+	"squadup/backend/internal/storage"
 	"squadup/backend/internal/team"
 	"squadup/backend/internal/ws"
 	"strings"
@@ -44,6 +46,7 @@ func main() {
 		cfg.ImageGenURL,
 		cfg.ImageGenKey,
 	)
+	imgStorage := storage.New(cfg)
 
 	var apiLimiter *limiter.Limiter
 	var authLimiter *limiter.Limiter
@@ -82,16 +85,84 @@ func main() {
 		c.Header("Cache-Control", "public, max-age=86400")
 		c.File(filePath)
 	})
+	api.POST("/upload/image", authLimitMiddleware, func(c *gin.Context) {
+		file, header, err := c.Request.FormFile("image")
+		if err != nil {
+			c.JSON(400, gin.H{"error": "image file required in 'image' field"})
+			return
+		}
+		defer file.Close()
+
+		if header.Size > 5*1024*1024 {
+			c.JSON(400, gin.H{"error": "image size must be less than 5MB"})
+			return
+		}
+
+		data, err := io.ReadAll(file)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to read uploaded file"})
+			return
+		}
+
+		contentType := http.DetectContentType(data)
+		validTypes := map[string]string{
+			"image/jpeg": ".jpg",
+			"image/png":  ".png",
+			"image/webp": ".webp",
+			"image/gif":  ".gif",
+		}
+		ext, ok := validTypes[contentType]
+		if !ok {
+			hdrExt := strings.ToLower(filepath.Ext(header.Filename))
+			if hdrExt == ".jpg" || hdrExt == ".jpeg" {
+				ext = ".jpg"
+				contentType = "image/jpeg"
+			} else if hdrExt == ".png" {
+				ext = ".png"
+				contentType = "image/png"
+			} else if hdrExt == ".webp" {
+				ext = ".webp"
+				contentType = "image/webp"
+			} else {
+				c.JSON(400, gin.H{"error": "only JPEG, PNG, WebP or GIF images are supported"})
+				return
+			}
+		}
+
+		key := fmt.Sprintf("profiles/%s%s", uuid.New().String(), ext)
+		imageURL, err := imgStorage.Upload(c.Request.Context(), key, data, contentType)
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to upload image: %v", err)})
+			return
+		}
+
+		if strings.HasPrefix(imageURL, "/") {
+			scheme := "http"
+			if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+				scheme = "https"
+			}
+			imageURL = fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, imageURL)
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": gin.H{
+				"url": imageURL,
+				"key": key,
+			},
+		})
+	})
 	api.POST("/auth/register", authLimitMiddleware, func(c *gin.Context) {
 		var in struct {
-			Name          string  `json:"name"`
-			Email         string  `json:"email"`
-			Password      string  `json:"password"`
-			Age           int     `json:"age"`
-			HeightCM      float64 `json:"height_cm"`
-			WeightKG      float64 `json:"weight_kg"`
-			PreferredFoot string  `json:"preferred_foot"`
-			Bio           string  `json:"bio"`
+			Name            string  `json:"name"`
+			Email           string  `json:"email"`
+			Password        string  `json:"password"`
+			Age             int     `json:"age"`
+			HeightCM        float64 `json:"height_cm"`
+			WeightKG        float64 `json:"weight_kg"`
+			PreferredFoot   string  `json:"preferred_foot"`
+			Bio             string  `json:"bio"`
+			ProfilePhotoURL string  `json:"profile_photo_url"`
 		}
 		if c.BindJSON(&in) != nil || in.Name == "" || len(in.Password) < 8 {
 			c.JSON(400, err("name/email/password(8+) required"))
@@ -102,7 +173,17 @@ func main() {
 			c.JSON(500, err("password hashing failed"))
 			return
 		}
-		u := models.User{Name: in.Name, Email: strings.ToLower(strings.TrimSpace(in.Email)), PasswordHash: hash, Age: in.Age, HeightCM: in.HeightCM, WeightKG: in.WeightKG, PreferredFoot: in.PreferredFoot, Bio: in.Bio}
+		u := models.User{
+			Name:            in.Name,
+			Email:           strings.ToLower(strings.TrimSpace(in.Email)),
+			PasswordHash:    hash,
+			Age:             in.Age,
+			HeightCM:        in.HeightCM,
+			WeightKG:        in.WeightKG,
+			PreferredFoot:   in.PreferredFoot,
+			Bio:             in.Bio,
+			ProfilePhotoURL: strings.TrimSpace(in.ProfilePhotoURL),
+		}
 		if e = db.Create(&u).Error; e != nil {
 			c.JSON(409, err("email already registered"))
 			return
@@ -138,12 +219,13 @@ func main() {
 	sec.PUT("/users/me", func(c *gin.Context) {
 		uid := mustUUID(auth.UserID(c))
 		var in struct {
-			Name          *string  `json:"name"`
-			Age           *int     `json:"age"`
-			HeightCM      *float64 `json:"height_cm"`
-			WeightKG      *float64 `json:"weight_kg"`
-			PreferredFoot *string  `json:"preferred_foot"`
-			Bio           *string  `json:"bio"`
+			Name            *string  `json:"name"`
+			Age             *int     `json:"age"`
+			HeightCM        *float64 `json:"height_cm"`
+			WeightKG        *float64 `json:"weight_kg"`
+			PreferredFoot   *string  `json:"preferred_foot"`
+			Bio             *string  `json:"bio"`
+			ProfilePhotoURL *string  `json:"profile_photo_url"`
 		}
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -172,6 +254,9 @@ func main() {
 		}
 		if in.Bio != nil {
 			updates["bio"] = strings.TrimSpace(*in.Bio)
+		}
+		if in.ProfilePhotoURL != nil {
+			updates["profile_photo_url"] = strings.TrimSpace(*in.ProfilePhotoURL)
 		}
 		if len(updates) > 0 {
 			if e := db.Model(&u).Updates(updates).Error; e != nil {
@@ -1184,21 +1269,29 @@ func main() {
 			mimeType = "image/png"
 		}
 
-		// Persist poster image to disk
-		uploadsDir := filepath.Join("uploads", "posters")
-		_ = os.MkdirAll(uploadsDir, 0755)
-		posterFilename := fmt.Sprintf("%s.png", mid.String())
-		posterPath := filepath.Join(uploadsDir, posterFilename)
-		if writeErr := os.WriteFile(posterPath, imgBytes, 0644); writeErr != nil {
-			log.Printf("Failed to write poster file: %v", writeErr)
+		// Persist poster image to storage (Backblaze B2 or fallback)
+		posterFilename := fmt.Sprintf("posters/%s.png", mid.String())
+		posterURL, uploadErr := imgStorage.Upload(c.Request.Context(), posterFilename, imgBytes, "image/png")
+		if uploadErr != nil {
+			log.Printf("Failed to upload poster to storage: %v", uploadErr)
+			scheme := "http"
+			if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+				scheme = "https"
+			}
+			posterURL = fmt.Sprintf("%s://%s/api/matches/%s/poster-image", scheme, c.Request.Host, mid.String())
+		} else if strings.HasPrefix(posterURL, "/") {
+			scheme := "http"
+			if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+				scheme = "https"
+			}
+			posterURL = fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, posterURL)
 		}
 
-		scheme := "http"
-		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		host := c.Request.Host
-		posterURL := fmt.Sprintf("%s://%s/api/matches/%s/poster-image", scheme, host, mid.String())
+		// Keep local disk copy as fallback for /api/matches/:id/poster-image
+		uploadsDir := filepath.Join("uploads", "posters")
+		_ = os.MkdirAll(uploadsDir, 0755)
+		_ = os.WriteFile(filepath.Join(uploadsDir, fmt.Sprintf("%s.png", mid.String())), imgBytes, 0644)
+
 		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgBytes))
 
 		// Persist on match

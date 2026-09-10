@@ -17,6 +17,12 @@ type Config struct {
 	RateLimitBurst     int
 	AuthRateLimitRPM   int
 	AuthRateLimitBurst int
+	B2Endpoint         string
+	B2Region           string
+	B2KeyID            string
+	B2ApplicationKey   string
+	B2BucketName       string
+	B2PublicURL        string
 }
 
 func parseBool(val string, def bool) bool {
@@ -110,6 +116,12 @@ func Load() Config {
 		RateLimitBurst:     parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
 		AuthRateLimitRPM:   parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
 		AuthRateLimitBurst: parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
+		B2Endpoint:         os.Getenv("B2_ENDPOINT"),
+		B2Region:           os.Getenv("B2_REGION"),
+		B2KeyID:            os.Getenv("B2_KEY_ID"),
+		B2ApplicationKey:   os.Getenv("B2_APPLICATION_KEY"),
+		B2BucketName:       os.Getenv("B2_BUCKET_NAME"),
+		B2PublicURL:        os.Getenv("B2_PUBLIC_URL"),
 	}
 	if c.Port == "" {
 		c.Port = "8080"
