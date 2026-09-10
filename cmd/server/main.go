@@ -575,13 +575,183 @@ func main() {
 	})
 	sec.GET("/groups/:id/chat", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
 		var msgs []models.ChatMessage
 		if e := db.Where("group_id=?", gid).Order("created_at ASC").Limit(100).Find(&msgs).Error; e != nil {
 			c.JSON(500, err(e.Error()))
 			return
 		}
-		c.JSON(200, gin.H{"success": true, "data": msgs})
+		if len(msgs) == 0 {
+			c.JSON(200, gin.H{"success": true, "data": []any{}})
+			return
+		}
+
+		var msgIDs []uuid.UUID
+		for _, m := range msgs {
+			msgIDs = append(msgIDs, m.ID)
+		}
+		var reads []models.ChatMessageRead
+		db.Where("message_id IN ?", msgIDs).Find(&reads)
+		readsMap := make(map[uuid.UUID][]uuid.UUID)
+		for _, r := range reads {
+			readsMap[r.MessageID] = append(readsMap[r.MessageID], r.UserID)
+		}
+
+		type chatMsgResponse struct {
+			models.ChatMessage
+			SeenCount int         `json:"seen_count"`
+			SeenByIDs []uuid.UUID `json:"seen_by_ids"`
+		}
+		out := make([]chatMsgResponse, len(msgs))
+		for i, m := range msgs {
+			userIDs := readsMap[m.ID]
+			if userIDs == nil {
+				userIDs = []uuid.UUID{}
+			}
+			out[i] = chatMsgResponse{
+				ChatMessage: m,
+				SeenCount:   len(userIDs),
+				SeenByIDs:   userIDs,
+			}
+		}
+		c.JSON(200, gin.H{"success": true, "data": out})
 	})
+	sec.POST("/groups/:id/chat/read", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
+		var in struct {
+			MessageIDs []string `json:"message_ids"`
+		}
+		_ = c.BindJSON(&in)
+
+		var msgs []models.ChatMessage
+		if len(in.MessageIDs) > 0 {
+			var ids []uuid.UUID
+			for _, sid := range in.MessageIDs {
+				if id, err := uuid.Parse(sid); err == nil {
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) > 0 {
+				db.Where("group_id=? AND id IN ? AND sender_id != ?", gid, ids, uid).Find(&msgs)
+			}
+		} else {
+			db.Where("group_id=? AND sender_id != ?", gid, uid).Order("created_at DESC").Limit(100).Find(&msgs)
+		}
+
+		if len(msgs) == 0 {
+			c.JSON(200, gin.H{"success": true, "data": gin.H{"marked_count": 0}})
+			return
+		}
+
+		now := time.Now().UTC()
+		var readIDs []uuid.UUID
+		for _, m := range msgs {
+			var existing models.ChatMessageRead
+			if db.Where("message_id=? AND user_id=?", m.ID, uid).First(&existing).Error != nil {
+				r := models.ChatMessageRead{
+					MessageID: m.ID,
+					UserID:    uid,
+					GroupID:   gid,
+					ReadAt:    now,
+				}
+				if db.Create(&r).Error == nil {
+					readIDs = append(readIDs, m.ID)
+				}
+			}
+		}
+
+		if len(readIDs) > 0 {
+			hub.Broadcast(gid.String(), ws.Event{
+				Type: "MESSAGES_READ",
+				Data: gin.H{
+					"group_id":    gid,
+					"user_id":     uid,
+					"message_ids": readIDs,
+					"read_at":     now,
+				},
+			})
+		}
+
+		c.JSON(200, gin.H{"success": true, "data": gin.H{"marked_count": len(readIDs)}})
+	})
+	getSeenHandler := func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		mid := mustUUID(c.Param("message_id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
+
+		var msg models.ChatMessage
+		if db.Where("id=? AND group_id=?", mid, gid).First(&msg).Error != nil {
+			c.JSON(404, err("message not found"))
+			return
+		}
+
+		var reads []models.ChatMessageRead
+		db.Where("message_id=?", mid).Order("read_at ASC").Find(&reads)
+
+		type readReceiptItem struct {
+			User   models.User `json:"user"`
+			ReadAt time.Time   `json:"read_at"`
+		}
+
+		var seenBy []readReceiptItem
+		readUserMap := make(map[uuid.UUID]bool)
+		for _, r := range reads {
+			var u models.User
+			if db.First(&u, r.UserID).Error == nil {
+				seenBy = append(seenBy, readReceiptItem{
+					User:   u,
+					ReadAt: r.ReadAt,
+				})
+				readUserMap[r.UserID] = true
+			}
+		}
+
+		var members []models.GroupMember
+		db.Where("group_id=?", gid).Find(&members)
+		var unseenBy []models.User
+		for _, mb := range members {
+			if mb.UserID == msg.SenderID {
+				continue
+			}
+			if !readUserMap[mb.UserID] {
+				var u models.User
+				if db.First(&u, mb.UserID).Error == nil {
+					unseenBy = append(unseenBy, u)
+				}
+			}
+		}
+
+		if seenBy == nil {
+			seenBy = []readReceiptItem{}
+		}
+		if unseenBy == nil {
+			unseenBy = []models.User{}
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": gin.H{
+				"message_id": mid,
+				"seen_by":    seenBy,
+				"unseen_by":  unseenBy,
+			},
+		})
+	}
+	sec.GET("/groups/:id/chat/messages/:message_id/seen", getSeenHandler)
+	sec.GET("/groups/:id/chat/:message_id/seen", getSeenHandler)
 	sec.POST("/groups/:id/chat", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
 		var in struct{ Content string }

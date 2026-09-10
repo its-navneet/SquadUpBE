@@ -144,6 +144,19 @@ type ChatMessage struct {
 }
 
 // ============================================================
+// Chat Message Read Receipt
+// ============================================================
+
+type ChatMessageRead struct {
+	Base
+
+	MessageID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_message_user_read" json:"message_id"`
+	UserID    uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_message_user_read" json:"user_id"`
+	GroupID   uuid.UUID `gorm:"type:uuid;index;not null" json:"group_id"`
+	ReadAt    time.Time `json:"read_at"`
+}
+
+// ============================================================
 // Venue
 // ============================================================
 
