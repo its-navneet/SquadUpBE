@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -209,6 +210,33 @@ func main() {
 	})
 	sec := api.Group("")
 	sec.Use(as.Middleware())
+	computeCareerStats := func(u *models.User) *models.CareerStats {
+		var stats []models.PlayerStatistics
+		db.Where("user_id = ?", u.ID).Find(&stats)
+
+		cs := &models.CareerStats{
+			Matches: u.CareerMatches,
+			Goals:   u.CareerGoals,
+			Assists: u.CareerAssists,
+			MVP:     u.CareerMVPs,
+		}
+
+		for _, s := range stats {
+			cs.Matches += s.Matches
+			cs.Wins += s.Wins
+			cs.Draws += s.Draws
+			cs.Losses += s.Losses
+			cs.Goals += s.Goals
+			cs.Assists += s.Assists
+			cs.MVP += s.MVP
+			cs.CleanSheets += s.CleanSheets
+		}
+
+		if cs.Matches > 0 {
+			cs.WinRate = math.Round((float64(cs.Wins)/float64(cs.Matches))*1000) / 10
+		}
+		return cs
+	}
 	sec.GET("/users/me", func(c *gin.Context) {
 		uid := mustUUID(auth.UserID(c))
 		var u models.User
@@ -216,6 +244,7 @@ func main() {
 			c.JSON(404, err("user not found"))
 			return
 		}
+		u.CareerStats = computeCareerStats(&u)
 		c.JSON(200, gin.H{"success": true, "data": u})
 	})
 	sec.PUT("/users/me", func(c *gin.Context) {
@@ -228,6 +257,12 @@ func main() {
 			PreferredFoot   *string  `json:"preferred_foot"`
 			Bio             *string  `json:"bio"`
 			ProfilePhotoURL *string  `json:"profile_photo_url"`
+			Position        *string  `json:"position"`
+			KitNumber       *int     `json:"kit_number"`
+			CareerMatches   *int     `json:"career_matches"`
+			CareerGoals     *int     `json:"career_goals"`
+			CareerAssists   *int     `json:"career_assists"`
+			CareerMVPs      *int     `json:"career_mvps"`
 		}
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -260,6 +295,24 @@ func main() {
 		if in.ProfilePhotoURL != nil {
 			updates["profile_photo_url"] = strings.TrimSpace(*in.ProfilePhotoURL)
 		}
+		if in.Position != nil {
+			updates["position"] = strings.ToUpper(strings.TrimSpace(*in.Position))
+		}
+		if in.KitNumber != nil {
+			updates["kit_number"] = *in.KitNumber
+		}
+		if in.CareerMatches != nil {
+			updates["career_matches"] = *in.CareerMatches
+		}
+		if in.CareerGoals != nil {
+			updates["career_goals"] = *in.CareerGoals
+		}
+		if in.CareerAssists != nil {
+			updates["career_assists"] = *in.CareerAssists
+		}
+		if in.CareerMVPs != nil {
+			updates["career_mvps"] = *in.CareerMVPs
+		}
 		if len(updates) > 0 {
 			if e := db.Model(&u).Updates(updates).Error; e != nil {
 				c.JSON(500, err("failed to update profile"))
@@ -270,6 +323,7 @@ func main() {
 				return
 			}
 		}
+		u.CareerStats = computeCareerStats(&u)
 		c.JSON(200, gin.H{"success": true, "data": u})
 	})
 	sec.GET("/sports", func(c *gin.Context) {

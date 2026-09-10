@@ -58,15 +58,34 @@ type SportPosition struct {
 type User struct {
 	Base
 
-	Name            string  `gorm:"not null" json:"name"`
-	Email           string  `gorm:"uniqueIndex;not null" json:"email"`
-	PasswordHash    string  `gorm:"not null" json:"-"`
-	Age             int     `json:"age"`
-	HeightCM        float64 `json:"height_cm"`
-	WeightKG        float64 `json:"weight_kg"`
-	ProfilePhotoURL string  `json:"profile_photo_url"`
-	PreferredFoot   string  `json:"preferred_foot"`
-	Bio             string  `json:"bio"`
+	Name            string       `gorm:"not null" json:"name"`
+	Email           string       `gorm:"uniqueIndex;not null" json:"email"`
+	PasswordHash    string       `gorm:"not null" json:"-"`
+	Age             int          `json:"age"`
+	HeightCM        float64      `json:"height_cm"`
+	WeightKG        float64      `json:"weight_kg"`
+	ProfilePhotoURL string       `json:"profile_photo_url"`
+	PreferredFoot   string       `json:"preferred_foot"`
+	Bio             string       `json:"bio"`
+	Position        string       `json:"position"`
+	KitNumber       int          `json:"kit_number"`
+	CareerMatches   int          `json:"career_matches"`
+	CareerGoals     int          `json:"career_goals"`
+	CareerAssists   int          `json:"career_assists"`
+	CareerMVPs      int          `json:"career_mvps"`
+	CareerStats     *CareerStats `gorm:"-" json:"career_stats,omitempty"`
+}
+
+type CareerStats struct {
+	Matches     int     `json:"matches"`
+	Wins        int     `json:"wins"`
+	Draws       int     `json:"draws"`
+	Losses      int     `json:"losses"`
+	Goals       int     `json:"goals"`
+	Assists     int     `json:"assists"`
+	MVP         int     `json:"mvp"`
+	CleanSheets int     `json:"clean_sheets"`
+	WinRate     float64 `json:"win_rate"`
 }
 
 // ============================================================
