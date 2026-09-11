@@ -363,7 +363,8 @@ func main() {
 	})
 	sec.GET("/groups/:id", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
-		if !mustMember(db, gid, mustUUID(auth.UserID(c))) {
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
 			c.JSON(403, err("not a group member"))
 			return
 		}
@@ -372,7 +373,12 @@ func main() {
 			c.JSON(404, err("group not found"))
 			return
 		}
-		c.JSON(200, gin.H{"success": true, "data": g})
+		var unreadCount int64
+		db.Model(&models.ChatMessage{}).
+			Where("group_id = ? AND sender_id != ?", gid, uid).
+			Where("id NOT IN (SELECT message_id FROM chat_message_reads WHERE user_id = ? AND group_id = ?)", uid, gid).
+			Count(&unreadCount)
+		c.JSON(200, gin.H{"success": true, "data": g, "unread_count": unreadCount})
 	})
 	sec.GET("/groups/:id/members", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
@@ -749,6 +755,46 @@ func main() {
 
 		c.JSON(200, gin.H{"success": true, "data": gin.H{"marked_count": len(readIDs)}})
 	})
+	sec.GET("/groups/:id/chat/unread", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
+		var count int64
+		db.Model(&models.ChatMessage{}).
+			Where("group_id = ? AND sender_id != ?", gid, uid).
+			Where("id NOT IN (SELECT message_id FROM chat_message_reads WHERE user_id = ? AND group_id = ?)", uid, gid).
+			Count(&count)
+		c.JSON(200, gin.H{"success": true, "data": gin.H{"unread_count": count}})
+	})
+	sec.POST("/groups/:id/chat/typing", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !mustMember(db, gid, uid) {
+			c.JSON(403, err("not a group member"))
+			return
+		}
+		var in struct {
+			IsTyping bool `json:"is_typing"`
+		}
+		if e := c.ShouldBindJSON(&in); e != nil {
+			c.JSON(400, err("invalid input"))
+			return
+		}
+		var user models.User
+		db.Select("id, name").First(&user, uid)
+		hub.Broadcast(gid.String(), ws.Event{
+			Type: "USER_TYPING",
+			Data: gin.H{
+				"user_id":   uid.String(),
+				"user_name": user.Name,
+				"is_typing": in.IsTyping,
+			},
+		})
+		c.JSON(200, gin.H{"success": true})
+	})
 	getSeenHandler := func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
 		mid := mustUUID(c.Param("message_id"))
@@ -1006,8 +1052,29 @@ func main() {
 		}()
 
 		for {
-			if _, _, e := conn.ReadMessage(); e != nil {
+			_, raw, e := conn.ReadMessage()
+			if e != nil {
 				return
+			}
+			var in struct {
+				Type     string `json:"type"`
+				IsTyping bool   `json:"is_typing"`
+			}
+			if json.Unmarshal(raw, &in) == nil && (in.Type == "TYPING" || in.Type == "TYPING_START" || in.Type == "TYPING_STOP") {
+				isTyping := in.IsTyping || in.Type == "TYPING_START"
+				if in.Type == "TYPING_STOP" {
+					isTyping = false
+				}
+				var user models.User
+				db.Select("id, name").First(&user, uid)
+				hub.Broadcast(gid.String(), ws.Event{
+					Type: "USER_TYPING",
+					Data: gin.H{
+						"user_id":   uid.String(),
+						"user_name": user.Name,
+						"is_typing": isTyping,
+					},
+				})
 			}
 		}
 	})
