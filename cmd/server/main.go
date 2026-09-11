@@ -404,6 +404,46 @@ func main() {
 			Count(&unreadCount)
 		c.JSON(200, gin.H{"success": true, "data": g, "unread_count": unreadCount})
 	})
+	sec.PATCH("/groups/:id", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		uid := mustUUID(auth.UserID(c))
+		if !isGroupAdmin(db, gid, uid) {
+			c.JSON(403, err("admin access required"))
+			return
+		}
+		var g models.Group
+		if e := db.First(&g, gid).Error; e != nil {
+			c.JSON(404, err("group not found"))
+			return
+		}
+		var in struct {
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
+			City        *string `json:"city"`
+			LogoURL     *string `json:"logo_url"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			c.JSON(400, err("invalid request"))
+			return
+		}
+		if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+			g.Name = strings.TrimSpace(*in.Name)
+		}
+		if in.Description != nil {
+			g.Description = strings.TrimSpace(*in.Description)
+		}
+		if in.City != nil {
+			g.City = strings.TrimSpace(*in.City)
+		}
+		if in.LogoURL != nil {
+			g.LogoURL = strings.TrimSpace(*in.LogoURL)
+		}
+		if e := db.Save(&g).Error; e != nil {
+			c.JSON(500, err(e.Error()))
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "data": g})
+	})
 	sec.GET("/groups/:id/members", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
 		uid := mustUUID(auth.UserID(c))
@@ -548,6 +588,71 @@ func main() {
 	}
 	sec.PUT("/groups/:id/members/:userId/role", updateMemberRoleHandler)
 	sec.POST("/groups/:id/members/:userId/role", updateMemberRoleHandler)
+	sec.DELETE("/groups/:id/members/:userId", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		currentUID := mustUUID(auth.UserID(c))
+		targetUID := mustUUID(c.Param("userId"))
+
+		var targetMember models.GroupMember
+		if e := db.Where("group_id = ? AND user_id = ? AND status = 'ACTIVE'", gid, targetUID).First(&targetMember).Error; e != nil {
+			c.JSON(404, err("member not found in group"))
+			return
+		}
+
+		var g models.Group
+		if e := db.First(&g, gid).Error; e != nil {
+			c.JSON(404, err("group not found"))
+			return
+		}
+
+		isSelf := currentUID == targetUID
+		if isSelf {
+			if g.OwnerID == currentUID {
+				c.JSON(400, err("squad owner cannot leave the squad. Transfer ownership or delete the squad."))
+				return
+			}
+			targetMember.Status = "LEFT"
+			if e := db.Save(&targetMember).Error; e != nil {
+				c.JSON(500, err(e.Error()))
+				return
+			}
+			notifyGroupMembers(db, gid, &currentUID, "MEMBER_LEFT", "Member Left", "A member has left the squad.", "GROUP", &gid)
+			c.JSON(200, gin.H{"success": true, "message": "left squad successfully"})
+			return
+		}
+
+		if !isGroupAdmin(db, gid, currentUID) {
+			c.JSON(403, err("admin access required to remove members"))
+			return
+		}
+		if targetUID == g.OwnerID {
+			c.JSON(400, err("cannot remove the squad owner"))
+			return
+		}
+		if targetMember.Role == "ADMIN" && currentUID != g.OwnerID {
+			c.JSON(403, err("only the squad owner can remove an admin"))
+			return
+		}
+
+		targetMember.Status = "REMOVED"
+		if e := db.Save(&targetMember).Error; e != nil {
+			c.JSON(500, err(e.Error()))
+			return
+		}
+
+		n := models.Notification{
+			UserID:     targetUID,
+			GroupID:    &gid,
+			Type:       "MEMBER_REMOVED",
+			Title:      "Removed from Squad",
+			Message:    "You have been removed from " + g.Name + ".",
+			EntityType: "GROUP",
+			EntityID:   &gid,
+		}
+		_ = db.Create(&n).Error
+
+		c.JSON(200, gin.H{"success": true, "message": "member removed successfully"})
+	})
 	sec.GET("/groups/:id/join-requests", func(c *gin.Context) {
 		gid := mustUUID(c.Param("id"))
 		uid := mustUUID(auth.UserID(c))
@@ -678,6 +783,20 @@ func main() {
 			userName = "A new player"
 		}
 		notifyGroupMembers(db, gid, &request.UserID, "MEMBER_JOINED", "New Squad Member", fmt.Sprintf("%s has joined %s! Welcome them to the squad.", userName, g.Name), "GROUP", &gid)
+		c.JSON(200, gin.H{"success": true, "data": r})
+	})
+	sec.POST("/groups/:id/join-requests/:requestId/reject", func(c *gin.Context) {
+		gid := mustUUID(c.Param("id"))
+		var request models.GroupJoinRequest
+		if e := db.First(&request, mustUUID(c.Param("requestId"))).Error; e != nil || request.GroupID != gid {
+			c.JSON(404, err("join request not found"))
+			return
+		}
+		r, e := gs.Reject(mustUUID(c.Param("requestId")), mustUUID(auth.UserID(c)))
+		if e != nil {
+			c.JSON(403, err(e.Error()))
+			return
+		}
 		c.JSON(200, gin.H{"success": true, "data": r})
 	})
 	sec.GET("/groups/:id/ratings/:userId", func(c *gin.Context) {

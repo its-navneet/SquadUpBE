@@ -127,3 +127,41 @@ func (s *Service) Approve(reqID, adminID uuid.UUID) (models.GroupJoinRequest, er
 	})
 	return r, err
 }
+
+func (s *Service) Reject(reqID, adminID uuid.UUID) (models.GroupJoinRequest, error) {
+	var r models.GroupJoinRequest
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, reqID).Error; e != nil {
+			return e
+		}
+		if r.Status != "PENDING" {
+			return errors.New("join request has already been reviewed")
+		}
+		var m models.GroupMember
+		if e := tx.Where("group_id=? AND user_id=? AND status='ACTIVE'", r.GroupID, adminID).First(&m).Error; e != nil || !(m.Role == "OWNER" || m.Role == "ADMIN") {
+			return errors.New("forbidden")
+		}
+		r.Status = "REJECTED"
+		r.ReviewedByID = &adminID
+		if e := tx.Save(&r).Error; e != nil {
+			return e
+		}
+
+		var g models.Group
+		if e := tx.First(&g, r.GroupID).Error; e == nil {
+			groupID := r.GroupID
+			n := models.Notification{
+				UserID:     r.UserID,
+				GroupID:    &groupID,
+				Type:       "JOIN_REJECTED",
+				Title:      "Request Declined",
+				Message:    "Your request to join " + g.Name + " was declined.",
+				EntityType: "GROUP",
+				EntityID:   &groupID,
+			}
+			_ = tx.Create(&n).Error
+		}
+		return nil
+	})
+	return r, err
+}
