@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -113,14 +114,19 @@ func main() {
 		}
 		defer file.Close()
 
-		if header.Size > 5*1024*1024 {
-			c.JSON(400, gin.H{"error": "image size must be less than 5MB"})
+		const maxImageBytes = 2 * 1024 * 1024 // 2MB
+		if header.Size > maxImageBytes {
+			c.JSON(400, gin.H{"error": "image size must be less than 2MB"})
 			return
 		}
 
-		data, err := io.ReadAll(file)
+		data, err := io.ReadAll(io.LimitReader(file, maxImageBytes+1))
 		if err != nil {
 			c.JSON(500, gin.H{"error": "failed to read uploaded file"})
+			return
+		}
+		if int64(len(data)) > maxImageBytes {
+			c.JSON(400, gin.H{"error": "image size must be less than 2MB"})
 			return
 		}
 
@@ -316,8 +322,13 @@ func main() {
 		if in.Bio != nil {
 			updates["bio"] = strings.TrimSpace(*in.Bio)
 		}
+		var oldPhotoToDelete string
 		if in.ProfilePhotoURL != nil {
-			updates["profile_photo_url"] = strings.TrimSpace(*in.ProfilePhotoURL)
+			newPhoto := strings.TrimSpace(*in.ProfilePhotoURL)
+			if u.ProfilePhotoURL != "" && u.ProfilePhotoURL != newPhoto {
+				oldPhotoToDelete = u.ProfilePhotoURL
+			}
+			updates["profile_photo_url"] = newPhoto
 		}
 		if in.Position != nil {
 			updates["position"] = strings.ToUpper(strings.TrimSpace(*in.Position))
@@ -335,6 +346,17 @@ func main() {
 			if e := db.Model(&u).Updates(updates).Error; e != nil {
 				c.JSON(500, err("failed to update profile"))
 				return
+			}
+			if oldPhotoToDelete != "" {
+				go func(urlToDelete string) {
+					delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if delErr := imgStorage.DeleteByURL(delCtx, urlToDelete); delErr != nil {
+						log.Printf("[Storage] Failed to delete previous profile photo %s: %v", urlToDelete, delErr)
+					} else {
+						log.Printf("[Storage] Deleted previous profile photo %s", urlToDelete)
+					}
+				}(oldPhotoToDelete)
 			}
 			if e := db.First(&u, uid).Error; e != nil {
 				c.JSON(500, err("failed to reload profile"))
@@ -435,12 +457,28 @@ func main() {
 		if in.City != nil {
 			g.City = strings.TrimSpace(*in.City)
 		}
+		var oldLogoToDelete string
 		if in.LogoURL != nil {
-			g.LogoURL = strings.TrimSpace(*in.LogoURL)
+			newLogo := strings.TrimSpace(*in.LogoURL)
+			if g.LogoURL != "" && g.LogoURL != newLogo {
+				oldLogoToDelete = g.LogoURL
+			}
+			g.LogoURL = newLogo
 		}
 		if e := db.Save(&g).Error; e != nil {
 			c.JSON(500, err(e.Error()))
 			return
+		}
+		if oldLogoToDelete != "" {
+			go func(urlToDelete string) {
+				delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if delErr := imgStorage.DeleteByURL(delCtx, urlToDelete); delErr != nil {
+					log.Printf("[Storage] Failed to delete previous squad logo %s: %v", urlToDelete, delErr)
+				} else {
+					log.Printf("[Storage] Deleted previous squad logo %s", urlToDelete)
+				}
+			}(oldLogoToDelete)
 		}
 		c.JSON(200, gin.H{"success": true, "data": g})
 	})
@@ -2061,7 +2099,7 @@ func main() {
 			mimeType = "image/png"
 		}
 
-		// Persist poster image to storage (Backblaze B2 or fallback)
+		// Persist poster image to storage (Amazon S3 or fallback)
 		posterFilename := fmt.Sprintf("posters/%s.png", mid.String())
 		posterURL, uploadErr := imgStorage.Upload(c.Request.Context(), posterFilename, imgBytes, "image/png")
 		if uploadErr != nil {

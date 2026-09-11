@@ -6,23 +6,23 @@ import (
 )
 
 type Config struct {
-	Port               string
-	DatabaseURL        string
-	JWTSecret          string
-	CORSOrigins        string
-	ImageGenURL        string
-	ImageGenKey        string
-	RateLimitEnabled   bool
-	RateLimitRPS       float64
-	RateLimitBurst     int
-	AuthRateLimitRPM   int
-	AuthRateLimitBurst int
-	B2Endpoint         string
-	B2Region           string
-	B2KeyID            string
-	B2ApplicationKey   string
-	B2BucketName       string
-	B2PublicURL        string
+	Port                string
+	DatabaseURL         string
+	JWTSecret           string
+	CORSOrigins         string
+	ImageGenURL         string
+	ImageGenKey         string
+	RateLimitEnabled    bool
+	RateLimitRPS        float64
+	RateLimitBurst      int
+	AuthRateLimitRPM    int
+	AuthRateLimitBurst  int
+	AWSRegion           string
+	AWSAccessKeyID      string
+	AWSSecretAccessKey  string
+	AWSS3Bucket         string
+	AWSS3Endpoint       string
+	AWSS3ForcePathStyle bool
 }
 
 func parseBool(val string, def bool) bool {
@@ -96,6 +96,15 @@ func loadEnvFile(path string) {
 	}
 }
 
+func getEnvFirst(keys ...string) string {
+	for _, k := range keys {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
 func Load() Config {
 	loadEnvFile(".env")
 	loadEnvFile("SquadUpBE/.env")
@@ -105,23 +114,26 @@ func Load() Config {
 	loadEnvFile("../.env")
 
 	c := Config{
-		Port:               os.Getenv("PORT"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
-		CORSOrigins:        os.Getenv("CORS_ORIGINS"),
-		ImageGenURL:        os.Getenv("IMAGE_GENERATION_URL"),
-		ImageGenKey:        os.Getenv("IMAGE_GENERATION_API_KEY"),
-		RateLimitEnabled:   parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
-		RateLimitRPS:       parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
-		RateLimitBurst:     parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
-		AuthRateLimitRPM:   parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
-		AuthRateLimitBurst: parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
-		B2Endpoint:         os.Getenv("B2_ENDPOINT"),
-		B2Region:           os.Getenv("B2_REGION"),
-		B2KeyID:            os.Getenv("B2_KEY_ID"),
-		B2ApplicationKey:   os.Getenv("B2_APPLICATION_KEY"),
-		B2BucketName:       os.Getenv("B2_BUCKET_NAME"),
-		B2PublicURL:        os.Getenv("B2_PUBLIC_URL"),
+		Port:                os.Getenv("PORT"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		JWTSecret:           os.Getenv("JWT_SECRET"),
+		CORSOrigins:         os.Getenv("CORS_ORIGINS"),
+		ImageGenURL:         os.Getenv("IMAGE_GENERATION_URL"),
+		ImageGenKey:         os.Getenv("IMAGE_GENERATION_API_KEY"),
+		RateLimitEnabled:    parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
+		RateLimitRPS:        parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
+		RateLimitBurst:      parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
+		AuthRateLimitRPM:    parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
+		AuthRateLimitBurst:  parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
+		AWSRegion:           getEnvFirst("AWS_REGION", "AWS_DEFAULT_REGION", "S3_REGION"),
+		AWSAccessKeyID:      getEnvFirst("AWS_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID"),
+		AWSSecretAccessKey:  getEnvFirst("AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY"),
+		AWSS3Bucket:         getEnvFirst("AWS_S3_BUCKET", "AWS_BUCKET_NAME", "S3_BUCKET_NAME"),
+		AWSS3Endpoint:       getEnvFirst("AWS_S3_ENDPOINT", "S3_ENDPOINT"),
+		AWSS3ForcePathStyle: parseBool(getEnvFirst("AWS_S3_FORCE_PATH_STYLE", "S3_FORCE_PATH_STYLE"), false),
+	}
+	if c.AWSRegion == "" {
+		c.AWSRegion = "ap-south-1"
 	}
 	if c.Port == "" {
 		c.Port = "8080"
