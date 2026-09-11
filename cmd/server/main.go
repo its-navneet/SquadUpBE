@@ -14,6 +14,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"squadup/backend/internal/auth"
@@ -63,6 +64,18 @@ func main() {
 		cfg.ImageGenKey,
 	)
 	imgStorage := storage.New(cfg)
+	models.MediaSigner = func(bucket, key, rawURL string) string {
+		if bucket != "" && key != "" {
+			signed, err := imgStorage.Presign(context.Background(), bucket, key)
+			if err == nil && signed != "" {
+				return signed
+			}
+		}
+		if rawURL != "" {
+			return imgStorage.PresignURL(context.Background(), rawURL)
+		}
+		return ""
+	}
 
 	var apiLimiter *limiter.Limiter
 	var authLimiter *limiter.Limiter
@@ -173,22 +186,25 @@ func main() {
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": gin.H{
-				"url": imageURL,
-				"key": key,
+				"url":    imageURL,
+				"key":    key,
+				"bucket": imgStorage.BucketName(),
 			},
 		})
 	})
 	api.POST("/auth/register", authLimitMiddleware, func(c *gin.Context) {
 		var in struct {
-			Name            string  `json:"name"`
-			Email           string  `json:"email"`
-			Password        string  `json:"password"`
-			Age             int     `json:"age"`
-			HeightCM        float64 `json:"height_cm"`
-			WeightKG        float64 `json:"weight_kg"`
-			PreferredFoot   string  `json:"preferred_foot"`
-			Bio             string  `json:"bio"`
-			ProfilePhotoURL string  `json:"profile_photo_url"`
+			Name               string  `json:"name"`
+			Email              string  `json:"email"`
+			Password           string  `json:"password"`
+			Age                int     `json:"age"`
+			HeightCM           float64 `json:"height_cm"`
+			WeightKG           float64 `json:"weight_kg"`
+			PreferredFoot      string  `json:"preferred_foot"`
+			Bio                string  `json:"bio"`
+			ProfilePhotoURL    string  `json:"profile_photo_url"`
+			ProfilePhotoBucket string  `json:"profile_photo_bucket"`
+			ProfilePhotoKey    string  `json:"profile_photo_key"`
 		}
 		if c.BindJSON(&in) != nil || in.Name == "" || len(in.Password) < 8 {
 			c.JSON(400, err("name/email/password(8+) required"))
@@ -199,16 +215,29 @@ func main() {
 			c.JSON(500, err("password hashing failed"))
 			return
 		}
+
+		photoURL := cleanStoredURL(in.ProfilePhotoURL)
+		photoBucket := strings.TrimSpace(in.ProfilePhotoBucket)
+		photoKey := strings.TrimSpace(in.ProfilePhotoKey)
+		if photoKey == "" && photoURL != "" {
+			photoBucket, photoKey = storage.ExtractBucketAndKey(photoURL, imgStorage.BucketName())
+		}
+		if photoBucket == "" && photoKey != "" {
+			photoBucket = imgStorage.BucketName()
+		}
+
 		u := models.User{
-			Name:            in.Name,
-			Email:           strings.ToLower(strings.TrimSpace(in.Email)),
-			PasswordHash:    hash,
-			Age:             in.Age,
-			HeightCM:        in.HeightCM,
-			WeightKG:        in.WeightKG,
-			PreferredFoot:   in.PreferredFoot,
-			Bio:             in.Bio,
-			ProfilePhotoURL: strings.TrimSpace(in.ProfilePhotoURL),
+			Name:               in.Name,
+			Email:              strings.ToLower(strings.TrimSpace(in.Email)),
+			PasswordHash:       hash,
+			Age:                in.Age,
+			HeightCM:           in.HeightCM,
+			WeightKG:           in.WeightKG,
+			PreferredFoot:      in.PreferredFoot,
+			Bio:                in.Bio,
+			ProfilePhotoURL:    photoURL,
+			ProfilePhotoBucket: photoBucket,
+			ProfilePhotoKey:    photoKey,
 		}
 		if e = db.Create(&u).Error; e != nil {
 			c.JSON(409, err("email already registered"))
@@ -282,17 +311,19 @@ func main() {
 	sec.PUT("/users/me", func(c *gin.Context) {
 		uid := mustUUID(auth.UserID(c))
 		var in struct {
-			Name            *string  `json:"name"`
-			Age             *int     `json:"age"`
-			HeightCM        *float64 `json:"height_cm"`
-			WeightKG        *float64 `json:"weight_kg"`
-			PreferredFoot   *string  `json:"preferred_foot"`
-			Bio             *string  `json:"bio"`
-			ProfilePhotoURL *string  `json:"profile_photo_url"`
-			Position        *string  `json:"position"`
-			KitNumber       *int     `json:"kit_number"`
-			FavouriteClub   *string  `json:"favourite_club"`
-			FavouritePlayer *string  `json:"favourite_player"`
+			Name               *string  `json:"name"`
+			Age                *int     `json:"age"`
+			HeightCM           *float64 `json:"height_cm"`
+			WeightKG           *float64 `json:"weight_kg"`
+			PreferredFoot      *string  `json:"preferred_foot"`
+			Bio                *string  `json:"bio"`
+			ProfilePhotoURL    *string  `json:"profile_photo_url"`
+			ProfilePhotoBucket *string  `json:"profile_photo_bucket"`
+			ProfilePhotoKey    *string  `json:"profile_photo_key"`
+			Position           *string  `json:"position"`
+			KitNumber          *int     `json:"kit_number"`
+			FavouriteClub      *string  `json:"favourite_club"`
+			FavouritePlayer    *string  `json:"favourite_player"`
 		}
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -322,16 +353,45 @@ func main() {
 		if in.Bio != nil {
 			updates["bio"] = strings.TrimSpace(*in.Bio)
 		}
-		var oldPhotoToDelete string
-		if in.ProfilePhotoURL != nil {
-			newPhoto := strings.TrimSpace(*in.ProfilePhotoURL)
-			if u.ProfilePhotoURL != "" && u.ProfilePhotoURL != newPhoto {
-				oldPhotoToDelete = u.ProfilePhotoURL
+		var oldKeyToDelete, oldBucketToDelete string
+		if in.ProfilePhotoURL != nil || in.ProfilePhotoKey != nil {
+			var newBucket, newKey, newCleanURL string
+			if in.ProfilePhotoKey != nil && *in.ProfilePhotoKey != "" {
+				newKey = strings.TrimSpace(*in.ProfilePhotoKey)
+				newBucket = imgStorage.BucketName()
+				if in.ProfilePhotoBucket != nil && *in.ProfilePhotoBucket != "" {
+					newBucket = strings.TrimSpace(*in.ProfilePhotoBucket)
+				}
+				newCleanURL = newKey
+			} else if in.ProfilePhotoURL != nil {
+				raw := strings.TrimSpace(*in.ProfilePhotoURL)
+				if raw != "" {
+					newBucket, newKey = storage.ExtractBucketAndKey(raw, imgStorage.BucketName())
+					newCleanURL = cleanStoredURL(raw)
+				}
 			}
-			updates["profile_photo_url"] = newPhoto
+
+			// Determine old bucket and key
+			oldKey := u.ProfilePhotoKey
+			oldBucket := u.ProfilePhotoBucket
+			if oldKey == "" && u.ProfilePhotoURL != "" {
+				oldBucket, oldKey = storage.ExtractBucketAndKey(u.ProfilePhotoURL, imgStorage.BucketName())
+			}
+			if oldBucket == "" {
+				oldBucket = imgStorage.BucketName()
+			}
+
+			if oldKey != "" && oldKey != newKey {
+				oldKeyToDelete = oldKey
+				oldBucketToDelete = oldBucket
+			}
+
+			updates["profile_photo_bucket"] = newBucket
+			updates["profile_photo_key"] = newKey
+			updates["profile_photo_url"] = newCleanURL
 		}
 		if in.Position != nil {
-			updates["position"] = strings.ToUpper(strings.TrimSpace(*in.Position))
+			updates["position"] = normalizePosition(*in.Position)
 		}
 		if in.KitNumber != nil {
 			updates["kit_number"] = *in.KitNumber
@@ -347,16 +407,16 @@ func main() {
 				c.JSON(500, err("failed to update profile"))
 				return
 			}
-			if oldPhotoToDelete != "" {
-				go func(urlToDelete string) {
+			if oldKeyToDelete != "" {
+				go func(b, k string) {
 					delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					if delErr := imgStorage.DeleteByURL(delCtx, urlToDelete); delErr != nil {
-						log.Printf("[Storage] Failed to delete previous profile photo %s: %v", urlToDelete, delErr)
+					if delErr := imgStorage.DeleteObject(delCtx, b, k); delErr != nil {
+						log.Printf("[Storage] Failed to delete previous profile photo %s/%s: %v", b, k, delErr)
 					} else {
-						log.Printf("[Storage] Deleted previous profile photo %s", urlToDelete)
+						log.Printf("[Storage] Deleted previous profile photo %s/%s", b, k)
 					}
-				}(oldPhotoToDelete)
+				}(oldBucketToDelete, oldKeyToDelete)
 			}
 			if e := db.First(&u, uid).Error; e != nil {
 				c.JSON(500, err("failed to reload profile"))
@@ -443,6 +503,8 @@ func main() {
 			Description *string `json:"description"`
 			City        *string `json:"city"`
 			LogoURL     *string `json:"logo_url"`
+			LogoBucket  *string `json:"logo_bucket"`
+			LogoKey     *string `json:"logo_key"`
 		}
 		if c.ShouldBindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -457,28 +519,56 @@ func main() {
 		if in.City != nil {
 			g.City = strings.TrimSpace(*in.City)
 		}
-		var oldLogoToDelete string
-		if in.LogoURL != nil {
-			newLogo := strings.TrimSpace(*in.LogoURL)
-			if g.LogoURL != "" && g.LogoURL != newLogo {
-				oldLogoToDelete = g.LogoURL
+		var oldLogoKey, oldLogoBucket string
+		if in.LogoURL != nil || in.LogoKey != nil {
+			var newBucket, newKey, newCleanURL string
+			if in.LogoKey != nil && *in.LogoKey != "" {
+				newKey = strings.TrimSpace(*in.LogoKey)
+				newBucket = imgStorage.BucketName()
+				if in.LogoBucket != nil && *in.LogoBucket != "" {
+					newBucket = strings.TrimSpace(*in.LogoBucket)
+				}
+				newCleanURL = newKey
+			} else if in.LogoURL != nil {
+				raw := strings.TrimSpace(*in.LogoURL)
+				if raw != "" {
+					newBucket, newKey = storage.ExtractBucketAndKey(raw, imgStorage.BucketName())
+					newCleanURL = cleanStoredURL(raw)
+				}
 			}
-			g.LogoURL = newLogo
+
+			oldKey := g.LogoKey
+			oldBucket := g.LogoBucket
+			if oldKey == "" && g.LogoURL != "" {
+				oldBucket, oldKey = storage.ExtractBucketAndKey(g.LogoURL, imgStorage.BucketName())
+			}
+			if oldBucket == "" {
+				oldBucket = imgStorage.BucketName()
+			}
+
+			if oldKey != "" && oldKey != newKey {
+				oldLogoKey = oldKey
+				oldLogoBucket = oldBucket
+			}
+
+			g.LogoBucket = newBucket
+			g.LogoKey = newKey
+			g.LogoURL = newCleanURL
 		}
 		if e := db.Save(&g).Error; e != nil {
 			c.JSON(500, err(e.Error()))
 			return
 		}
-		if oldLogoToDelete != "" {
-			go func(urlToDelete string) {
+		if oldLogoKey != "" {
+			go func(b, k string) {
 				delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				if delErr := imgStorage.DeleteByURL(delCtx, urlToDelete); delErr != nil {
-					log.Printf("[Storage] Failed to delete previous squad logo %s: %v", urlToDelete, delErr)
+				if delErr := imgStorage.DeleteObject(delCtx, b, k); delErr != nil {
+					log.Printf("[Storage] Failed to delete previous squad logo %s/%s: %v", b, k, delErr)
 				} else {
-					log.Printf("[Storage] Deleted previous squad logo %s", urlToDelete)
+					log.Printf("[Storage] Deleted previous squad logo %s/%s", b, k)
 				}
-			}(oldLogoToDelete)
+			}(oldLogoBucket, oldLogoKey)
 		}
 		c.JSON(200, gin.H{"success": true, "data": g})
 	})
@@ -1851,8 +1941,9 @@ func main() {
 			for _, x := range p {
 
 				member := models.TeamMember{
-					TeamID: tm.ID,
-					UserID: x.UserID,
+					TeamID:       tm.ID,
+					UserID:       x.UserID,
+					PositionName: normalizePosition(x.Position),
 				}
 
 				if e := tx.Create(&member).Error; e != nil {
@@ -2278,16 +2369,50 @@ func main() {
 
 func seed(db *gorm.DB) {
 	var s models.Sport
-	if db.Where("name=?", "Football").First(&s).Error == nil {
-		return
+	if db.Where("name=?", "Football").First(&s).Error != nil {
+		s = models.Sport{Name: "Football", Icon: "⚽", Active: true}
+		if err := db.Create(&s).Error; err != nil {
+			log.Printf("[Seed] Failed to create sport Football: %v", err)
+			return
+		}
 	}
-	s = models.Sport{Name: "Football", Icon: "⚽", Active: true}
-	db.Create(&s)
-	pos := []string{"Goalkeeper", "Defender", "Full Back", "Centre Back", "Midfielder", "Winger", "Striker"}
-	codes := []string{"GK", "DEF", "FB", "CB", "MF", "WG", "ST"}
-	for i, n := range pos {
-		db.Create(&models.SportPosition{SportID: s.ID, Name: n, Code: codes[i], SortOrder: i})
+
+	desired := []struct {
+		Name string
+		Code string
+	}{
+		{Name: "Goalkeeper", Code: "GK"},
+		{Name: "Defender", Code: "DEF"},
+		{Name: "Midfielder", Code: "MID"},
+		{Name: "Striker", Code: "ST"},
 	}
+
+	validCodes := []string{"GK", "DEF", "MID", "ST"}
+	// Keep only the 4 canonical positions for Football
+	db.Where("sport_id = ? AND code NOT IN ?", s.ID, validCodes).Delete(&models.SportPosition{})
+
+	for i, p := range desired {
+		var sp models.SportPosition
+		if err := db.Where("sport_id = ? AND code = ?", s.ID, p.Code).First(&sp).Error; err != nil {
+			db.Create(&models.SportPosition{
+				SportID:   s.ID,
+				Name:      p.Name,
+				Code:      p.Code,
+				SortOrder: i,
+			})
+		} else {
+			db.Model(&sp).Updates(map[string]interface{}{
+				"name":       p.Name,
+				"sort_order": i,
+			})
+		}
+	}
+
+	// Migrate legacy position codes in users table
+	db.Model(&models.User{}).Where("UPPER(TRIM(position)) IN ?", []string{"MF", "MIDFIELDER", "CM", "CAM", "CDM", "LM", "RM"}).Update("position", "MID")
+	db.Model(&models.User{}).Where("UPPER(TRIM(position)) IN ?", []string{"CB", "FB", "DEFENDER", "LB", "RB", "CENTRE BACK", "FULL BACK"}).Update("position", "DEF")
+	db.Model(&models.User{}).Where("UPPER(TRIM(position)) IN ?", []string{"WG", "FWD", "FORWARD", "STRIKER", "CF", "ATTACKER", "LW", "RW", "WINGER"}).Update("position", "ST")
+	db.Model(&models.User{}).Where("UPPER(TRIM(position)) IN ?", []string{"GOALKEEPER", "GOALIE", "KEEPER"}).Update("position", "GK")
 }
 func cors(origin string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -2446,6 +2571,35 @@ func resolveVenue(venue, mapURL string) (string, string) {
 	}
 
 	return venue, mapURL
+}
+
+func cleanStoredURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" {
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	return raw
+}
+
+func normalizePosition(pos string) string {
+	clean := strings.ToUpper(strings.TrimSpace(pos))
+	switch {
+	case clean == "GK" || strings.Contains(clean, "GOAL") || clean == "KEEPER":
+		return "GK"
+	case clean == "DEF" || strings.Contains(clean, "DEF") || clean == "CB" || clean == "FB" || clean == "LB" || clean == "RB":
+		return "DEF"
+	case clean == "MID" || clean == "MF" || strings.Contains(clean, "MID") || clean == "CM" || clean == "CAM" || clean == "CDM":
+		return "MID"
+	case clean == "ST" || clean == "FWD" || clean == "WG" || strings.Contains(clean, "STRIK") || strings.Contains(clean, "FOR") || strings.Contains(clean, "ATT") || strings.Contains(clean, "WING"):
+		return "ST"
+	default:
+		return clean
+	}
 }
 
 var _ = http.MethodGet

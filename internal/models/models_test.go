@@ -97,3 +97,32 @@ func TestMatchModelProperties(t *testing.T) {
 		t.Errorf("expected max players 14, got %d", match.MaxPlayers)
 	}
 }
+
+func TestUserMediaSignerPresignsPhoto(t *testing.T) {
+	models.MediaSigner = func(bucket, key, rawURL string) string {
+		return "https://presigned.s3.amazonaws.com/" + bucket + "/" + key + "?signature=abc"
+	}
+	defer func() { models.MediaSigner = nil }()
+
+	u := models.User{
+		Name:               "Leo",
+		ProfilePhotoBucket: "my-bucket",
+		ProfilePhotoKey:    "profiles/leo.jpg",
+		ProfilePhotoURL:    "https://original-url.com/profiles/leo.jpg",
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	expected := "https://presigned.s3.amazonaws.com/my-bucket/profiles/leo.jpg?signature=abc"
+	if m["profile_photo_url"] != expected {
+		t.Errorf("expected %q, got %q", expected, m["profile_photo_url"])
+	}
+}

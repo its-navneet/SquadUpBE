@@ -1,11 +1,15 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// MediaSigner is an optional callback hook to generate presigned S3 URLs on JSON serialization.
+var MediaSigner func(bucket, key, rawURL string) string
 
 // ============================================================
 // Base
@@ -58,24 +62,41 @@ type SportPosition struct {
 type User struct {
 	Base
 
-	Name            string       `gorm:"not null" json:"name"`
-	Email           string       `gorm:"uniqueIndex;not null" json:"email"`
-	PasswordHash    string       `gorm:"not null" json:"-"`
-	Age             int          `json:"age"`
-	HeightCM        float64      `json:"height_cm"`
-	WeightKG        float64      `json:"weight_kg"`
-	ProfilePhotoURL string       `json:"profile_photo_url"`
-	PreferredFoot   string       `json:"preferred_foot"`
-	Bio             string       `json:"bio"`
-	Position        string       `json:"position"`
-	KitNumber       int          `json:"kit_number"`
-	FavouriteClub   string       `json:"favourite_club"`
-	FavouritePlayer string       `json:"favourite_player"`
-	CareerMatches   int          `json:"career_matches"`
-	CareerGoals     int          `json:"career_goals"`
-	CareerAssists   int          `json:"career_assists"`
-	CareerMVPs      int          `json:"career_mvps"`
-	CareerStats     *CareerStats `gorm:"-" json:"career_stats,omitempty"`
+	Name               string       `gorm:"not null" json:"name"`
+	Email              string       `gorm:"uniqueIndex;not null" json:"email"`
+	PasswordHash       string       `gorm:"not null" json:"-"`
+	Age                int          `json:"age"`
+	HeightCM           float64      `json:"height_cm"`
+	WeightKG           float64      `json:"weight_kg"`
+	ProfilePhotoURL    string       `json:"profile_photo_url"`
+	ProfilePhotoBucket string       `json:"profile_photo_bucket,omitempty"`
+	ProfilePhotoKey    string       `json:"profile_photo_key,omitempty"`
+	PreferredFoot      string       `json:"preferred_foot"`
+	Bio                string       `json:"bio"`
+	Position           string       `json:"position"`
+	KitNumber          int          `json:"kit_number"`
+	FavouriteClub      string       `json:"favourite_club"`
+	FavouritePlayer    string       `json:"favourite_player"`
+	CareerMatches      int          `json:"career_matches"`
+	CareerGoals        int          `json:"career_goals"`
+	CareerAssists      int          `json:"career_assists"`
+	CareerMVPs         int          `json:"career_mvps"`
+	CareerStats        *CareerStats `gorm:"-" json:"career_stats,omitempty"`
+}
+
+func (u User) MarshalJSON() ([]byte, error) {
+	type Alias User
+	photo := u.ProfilePhotoURL
+	if MediaSigner != nil && (u.ProfilePhotoKey != "" || photo != "") {
+		photo = MediaSigner(u.ProfilePhotoBucket, u.ProfilePhotoKey, photo)
+	}
+	return json.Marshal(&struct {
+		Alias
+		ProfilePhotoURL string `json:"profile_photo_url"`
+	}{
+		Alias:           Alias(u),
+		ProfilePhotoURL: photo,
+	})
 }
 
 type CareerStats struct {
@@ -114,11 +135,28 @@ type Group struct {
 	Name        string    `gorm:"not null" json:"name"`
 	Description string    `json:"description"`
 	LogoURL     string    `json:"logo_url"`
+	LogoBucket  string    `json:"logo_bucket,omitempty"`
+	LogoKey     string    `json:"logo_key,omitempty"`
 	City        string    `json:"city"`
 	SportID     uuid.UUID `gorm:"type:uuid;index;not null" json:"sport_id"`
 	Privacy     string    `gorm:"default:'PRIVATE'" json:"privacy"`
 	OwnerID     uuid.UUID `gorm:"type:uuid;index;not null" json:"owner_id"`
 	InviteCode  string    `gorm:"uniqueIndex;not null" json:"invite_code"`
+}
+
+func (g Group) MarshalJSON() ([]byte, error) {
+	type Alias Group
+	logo := g.LogoURL
+	if MediaSigner != nil && (g.LogoKey != "" || logo != "") {
+		logo = MediaSigner(g.LogoBucket, g.LogoKey, logo)
+	}
+	return json.Marshal(&struct {
+		Alias
+		LogoURL string `json:"logo_url"`
+	}{
+		Alias:   Alias(g),
+		LogoURL: logo,
+	})
 }
 
 // ============================================================
@@ -219,6 +257,23 @@ type Match struct {
 	EndedAt         *time.Time `json:"ended_at,omitempty"`
 	FinalizedAt     *time.Time `json:"finalized_at,omitempty"`
 	PosterURL       string     `json:"poster_url,omitempty"`
+	PosterBucket    string     `json:"poster_bucket,omitempty"`
+	PosterKey       string     `json:"poster_key,omitempty"`
+}
+
+func (m Match) MarshalJSON() ([]byte, error) {
+	type Alias Match
+	poster := m.PosterURL
+	if MediaSigner != nil && (m.PosterKey != "" || poster != "") {
+		poster = MediaSigner(m.PosterBucket, m.PosterKey, poster)
+	}
+	return json.Marshal(&struct {
+		Alias
+		PosterURL string `json:"poster_url,omitempty"`
+	}{
+		Alias:     Alias(m),
+		PosterURL: poster,
+	})
 }
 
 // ============================================================

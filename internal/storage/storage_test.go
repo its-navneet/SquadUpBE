@@ -175,3 +175,49 @@ func TestLocalStoragePathTraversal(t *testing.T) {
 		t.Errorf("Expected error on path traversal delete, got nil")
 	}
 }
+
+func TestExtractBucketAndKey(t *testing.T) {
+	defaultBucket := "my-squadup-bucket"
+
+	tests := []struct {
+		name           string
+		input          string
+		expectedBucket string
+		expectedKey    string
+	}{
+		{
+			name:           "Virtual hosted S3 URL",
+			input:          "https://custom-bucket.s3.ap-south-1.amazonaws.com/profiles/avatar123.jpg",
+			expectedBucket: "custom-bucket",
+			expectedKey:    "profiles/avatar123.jpg",
+		},
+		{
+			name:           "Path style S3 URL",
+			input:          "https://s3.ap-south-1.amazonaws.com/path-bucket/profiles/avatar123.jpg",
+			expectedBucket: "path-bucket",
+			expectedKey:    "profiles/avatar123.jpg",
+		},
+		{
+			name:           "s3 URI scheme",
+			input:          "s3://s3-uri-bucket/profiles/avatar123.jpg",
+			expectedBucket: "s3-uri-bucket",
+			expectedKey:    "profiles/avatar123.jpg",
+		},
+		{
+			name:           "Direct key with default bucket",
+			input:          "profiles/avatar123.jpg",
+			expectedBucket: defaultBucket,
+			expectedKey:    "profiles/avatar123.jpg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBucket, gotKey := ExtractBucketAndKey(tt.input, defaultBucket)
+			if gotBucket != tt.expectedBucket || gotKey != tt.expectedKey {
+				t.Errorf("ExtractBucketAndKey(%q) = (%q, %q); want (%q, %q)",
+					tt.input, gotBucket, gotKey, tt.expectedBucket, tt.expectedKey)
+			}
+		})
+	}
+}

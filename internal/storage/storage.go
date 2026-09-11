@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"squadup/backend/internal/config"
 
@@ -21,7 +22,11 @@ import (
 type Storage interface {
 	Upload(ctx context.Context, key string, data []byte, contentType string) (string, error)
 	Delete(ctx context.Context, key string) error
+	DeleteObject(ctx context.Context, bucket, key string) error
 	DeleteByURL(ctx context.Context, imageURL string) error
+	Presign(ctx context.Context, bucket, key string) (string, error)
+	PresignURL(ctx context.Context, rawURL string) string
+	BucketName() string
 	IsConfigured() bool
 }
 
@@ -46,14 +51,14 @@ func ExtractKeyFromURL(rawURL string, bucketName string) string {
 	}
 
 	// Direct managed key (e.g. "profiles/abc.jpg")
-	if isManagedKey(rawURL) && !strings.Contains(rawURL, "..") {
+	if isManagedKey(rawURL) && !strings.Contains(rawURL, "..") && !strings.Contains(rawURL, "?") {
 		return rawURL
 	}
 
 	u, err := url.Parse(rawURL)
 	var path string
 	if err != nil || u.Path == "" {
-		path = rawURL
+		path = strings.Split(rawURL, "?")[0]
 	} else {
 		path = u.Path
 	}
@@ -83,15 +88,69 @@ func ExtractKeyFromURL(rawURL string, bucketName string) string {
 	return ""
 }
 
+// ExtractBucketAndKey extracts the S3 bucket and object key from an S3 URL, s3:// URI, or raw key.
+func ExtractBucketAndKey(rawURL string, defaultBucket string) (string, string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", ""
+	}
+
+	// Case 1: s3://bucket/key
+	if strings.HasPrefix(rawURL, "s3://") {
+		trimmed := strings.TrimPrefix(rawURL, "s3://")
+		parts := strings.SplitN(trimmed, "/", 2)
+		if len(parts) == 2 {
+			cleanKey := filepath.Clean(parts[1])
+			if !strings.Contains(cleanKey, "..") {
+				return parts[0], cleanKey
+			}
+		}
+		return parts[0], ""
+	}
+
+	u, err := url.Parse(rawURL)
+	if err == nil && u.Host != "" {
+		// Virtual-hosted: <bucket>.s3.<region>.amazonaws.com/<key>
+		hostParts := strings.Split(u.Host, ".")
+		if len(hostParts) >= 4 && (hostParts[1] == "s3" || strings.HasPrefix(hostParts[1], "s3-")) {
+			bucket := hostParts[0]
+			key := strings.TrimLeft(u.Path, "/")
+			cleanKey := filepath.Clean(key)
+			if !strings.Contains(cleanKey, "..") {
+				return bucket, cleanKey
+			}
+		}
+		// Path-style: s3.<region>.amazonaws.com/<bucket>/<key>
+		if len(hostParts) >= 3 && (hostParts[0] == "s3" || strings.HasPrefix(hostParts[0], "s3-")) {
+			pathParts := strings.SplitN(strings.TrimLeft(u.Path, "/"), "/", 2)
+			if len(pathParts) == 2 {
+				cleanKey := filepath.Clean(pathParts[1])
+				if !strings.Contains(cleanKey, "..") {
+					return pathParts[0], cleanKey
+				}
+			}
+		}
+	}
+
+	// Fallback using ExtractKeyFromURL
+	key := ExtractKeyFromURL(rawURL, defaultBucket)
+	if key != "" {
+		return defaultBucket, key
+	}
+
+	return defaultBucket, ""
+}
+
 // ============================================================
 // Amazon S3 Storage
 // ============================================================
 
 type S3Storage struct {
-	client     *s3.Client
-	bucketName string
-	region     string
-	endpoint   string
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucketName    string
+	region        string
+	endpoint      string
 }
 
 func NewS3Storage(cfg config.Config) (*S3Storage, error) {
@@ -136,12 +195,19 @@ func NewS3Storage(cfg config.Config) (*S3Storage, error) {
 		}
 	})
 
+	presignClient := s3.NewPresignClient(s3Client)
+
 	return &S3Storage{
-		client:     s3Client,
-		bucketName: cfg.AWSS3Bucket,
-		region:     region,
-		endpoint:   endpoint,
+		client:        s3Client,
+		presignClient: presignClient,
+		bucketName:    cfg.AWSS3Bucket,
+		region:        region,
+		endpoint:      endpoint,
 	}, nil
+}
+
+func (s *S3Storage) BucketName() string {
+	return s.bucketName
 }
 
 func (s *S3Storage) Upload(ctx context.Context, key string, data []byte, contentType string) (string, error) {
@@ -158,7 +224,13 @@ func (s *S3Storage) Upload(ctx context.Context, key string, data []byte, content
 		return "", fmt.Errorf("failed to upload to Amazon S3: %w", err)
 	}
 
-	// Custom endpoint (e.g. LocalStack or MinIO)
+	// Generate and return presigned URL valid for 7 days
+	presigned, presignErr := s.Presign(ctx, s.bucketName, key)
+	if presignErr == nil && presigned != "" {
+		return presigned, nil
+	}
+
+	// Custom endpoint fallback
 	if s.endpoint != "" {
 		cleanEndpoint := strings.TrimRight(s.endpoint, "/")
 		return fmt.Sprintf("%s/%s/%s", cleanEndpoint, s.bucketName, key), nil
@@ -168,21 +240,68 @@ func (s *S3Storage) Upload(ctx context.Context, key string, data []byte, content
 	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.bucketName, s.region, key), nil
 }
 
-func (s *S3Storage) Delete(ctx context.Context, key string) error {
+func (s *S3Storage) Presign(ctx context.Context, bucket, key string) (string, error) {
+	if bucket == "" {
+		bucket = s.bucketName
+	}
 	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return "", nil
+	}
+
+	presignReq, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = 7 * 24 * time.Hour // 7 days (maximum allowed for SigV4)
+	})
+	if err != nil {
+		return "", err
+	}
+	return presignReq.URL, nil
+}
+
+func (s *S3Storage) PresignURL(ctx context.Context, rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || strings.HasPrefix(rawURL, "data:") {
+		return rawURL
+	}
+	bucket, key := ExtractBucketAndKey(rawURL, s.bucketName)
+	if key == "" {
+		return rawURL
+	}
+	signed, err := s.Presign(ctx, bucket, key)
+	if err != nil || signed == "" {
+		return rawURL
+	}
+	return signed
+}
+
+func (s *S3Storage) Delete(ctx context.Context, key string) error {
+	return s.DeleteObject(ctx, s.bucketName, key)
+}
+
+func (s *S3Storage) DeleteObject(ctx context.Context, bucket, key string) error {
+	if bucket == "" {
+		bucket = s.bucketName
+	}
+	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return nil
+	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucketName),
+		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 	return err
 }
 
 func (s *S3Storage) DeleteByURL(ctx context.Context, imageURL string) error {
-	key := ExtractKeyFromURL(imageURL, s.bucketName)
+	bucket, key := ExtractBucketAndKey(imageURL, s.bucketName)
 	if key == "" {
 		return nil
 	}
-	return s.Delete(ctx, key)
+	return s.DeleteObject(ctx, bucket, key)
 }
 
 func (s *S3Storage) IsConfigured() bool {
@@ -209,6 +328,10 @@ func NewLocalStorage(baseDir, baseURL string) *LocalStorage {
 	}
 }
 
+func (l *LocalStorage) BucketName() string {
+	return ""
+}
+
 func (l *LocalStorage) Upload(_ context.Context, key string, data []byte, _ string) (string, error) {
 	key = strings.TrimLeft(key, "/")
 	cleanBase := filepath.Clean(l.baseDir)
@@ -229,6 +352,18 @@ func (l *LocalStorage) Upload(_ context.Context, key string, data []byte, _ stri
 	return fmt.Sprintf("/%s/%s", l.baseDir, key), nil
 }
 
+func (l *LocalStorage) Presign(_ context.Context, _, key string) (string, error) {
+	key = strings.TrimLeft(key, "/")
+	if l.baseURL != "" {
+		return fmt.Sprintf("%s/%s/%s", l.baseURL, l.baseDir, key), nil
+	}
+	return fmt.Sprintf("/%s/%s", l.baseDir, key), nil
+}
+
+func (l *LocalStorage) PresignURL(_ context.Context, rawURL string) string {
+	return rawURL
+}
+
 func (l *LocalStorage) Delete(_ context.Context, key string) error {
 	key = strings.TrimLeft(key, "/")
 	cleanBase := filepath.Clean(l.baseDir)
@@ -237,6 +372,10 @@ func (l *LocalStorage) Delete(_ context.Context, key string) error {
 		return fmt.Errorf("invalid path traversal in key: %s", key)
 	}
 	return os.Remove(targetPath)
+}
+
+func (l *LocalStorage) DeleteObject(ctx context.Context, _, key string) error {
+	return l.Delete(ctx, key)
 }
 
 func (l *LocalStorage) DeleteByURL(ctx context.Context, imageURL string) error {
