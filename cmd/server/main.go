@@ -1213,6 +1213,8 @@ func main() {
 			Name            string `json:"name"`
 			ScheduledAt     string `json:"scheduled_at"`
 			VenueID         string `json:"venue_id"`
+			Venue           string `json:"venue"`
+			VenueMapURL     string `json:"venue_map_url"`
 			Format          string `json:"format"`
 			Notes           string `json:"notes"`
 			DurationMinutes int    `json:"duration_minutes"`
@@ -1233,10 +1235,36 @@ func main() {
 		if e != nil {
 			t = time.Now().Add(24 * time.Hour)
 		}
-		m := models.Match{GroupID: gid, SportID: g.SportID, Name: in.Name, ScheduledAt: t, Format: in.Format, DurationMinutes: in.DurationMinutes, TeamCount: defaultInt(in.TeamCount, 2), PlayersPerTeam: in.PlayersPerTeam, MaxPlayers: in.MaxPlayers, Notes: in.Notes, Status: "UPCOMING"}
+		venueName, mapURL := resolveVenue(in.Venue, in.VenueMapURL)
+		m := models.Match{
+			GroupID:         gid,
+			SportID:         g.SportID,
+			Name:            in.Name,
+			ScheduledAt:     t,
+			Format:          in.Format,
+			DurationMinutes: in.DurationMinutes,
+			TeamCount:       defaultInt(in.TeamCount, 2),
+			PlayersPerTeam:  in.PlayersPerTeam,
+			MaxPlayers:      in.MaxPlayers,
+			Notes:           in.Notes,
+			Venue:           venueName,
+			VenueMapURL:     mapURL,
+			Status:          "UPCOMING",
+		}
 		if in.VenueID != "" {
 			id := mustUUID(in.VenueID)
 			m.VenueID = &id
+			if m.Venue == "" || m.VenueMapURL == "" {
+				var v models.Venue
+				if db.First(&v, id).Error == nil {
+					if m.Venue == "" {
+						m.Venue = v.Name
+					}
+					if m.VenueMapURL == "" {
+						m.VenueMapURL = v.GoogleMapsURL
+					}
+				}
+			}
 		}
 		if e = db.Create(&m).Error; e != nil {
 			c.JSON(500, err(e.Error()))
@@ -1302,6 +1330,8 @@ func main() {
 			Name            string `json:"name"`
 			ScheduledAt     string `json:"scheduled_at"`
 			VenueID         string `json:"venue_id"`
+			Venue           string `json:"venue"`
+			VenueMapURL     string `json:"venue_map_url"`
 			Format          string `json:"format"`
 			Notes           string `json:"notes"`
 			DurationMinutes int    `json:"duration_minutes"`
@@ -1337,9 +1367,23 @@ func main() {
 			m.MaxPlayers = m.TeamCount * m.PlayersPerTeam
 		}
 		m.Notes = in.Notes
+		venueName, mapURL := resolveVenue(in.Venue, in.VenueMapURL)
+		m.Venue = venueName
+		m.VenueMapURL = mapURL
 		if in.VenueID != "" {
 			vid := mustUUID(in.VenueID)
 			m.VenueID = &vid
+			if m.Venue == "" || m.VenueMapURL == "" {
+				var v models.Venue
+				if db.First(&v, vid).Error == nil {
+					if m.Venue == "" {
+						m.Venue = v.Name
+					}
+					if m.VenueMapURL == "" {
+						m.VenueMapURL = v.GoogleMapsURL
+					}
+				}
+			}
 		} else {
 			m.VenueID = nil
 		}
@@ -1827,27 +1871,59 @@ func main() {
 
 		prompt := fmt.Sprintf(
 			"Create a premium modern %s match poster for a casual recreational game.\n\n"+
-				"**STYLE:**\n\n"+
-				"* Professional %s promotional poster\n"+
-				"* Night stadium, dramatic floodlights, subtle fog\n"+
-				"* Dark cinematic background with %s pitch\n"+
-				"* Bold modern typography\n"+
-				"* Clean, minimal, premium sports design\n"+
-				"* Vertical 4:5 social-media format\n\n"+
-				"**MATCH:**\n"+
+
+				"VISUAL STYLE:\n"+
+				"- Professional %s sports promotional poster\n"+
+				"- Night stadium with dramatic floodlights and subtle fog\n"+
+				"- Dark cinematic background with a %s pitch\n"+
+				"- Bold modern sports typography\n"+
+				"- Clean, minimal, premium graphic design\n"+
+				"- Strong contrast and clear visual hierarchy\n"+
+				"- Vertical 4:5 social-media poster\n\n"+
+
+				"MATCH INFORMATION:\n"+
 				"%s\n\n"+
 				"DATE: %s\n"+
 				"TIME: %s\n"+
 				"VENUE: %s\n\n"+
-				"**LAYOUT:**\n\n"+
-				"* \"MATCH DAY\" at the top\n"+
-				"* All %d teams prominently displayed with players underneath\n"+
+
+				"LAYOUT:\n"+
+				"- Large 'MATCH DAY' heading at the top\n"+
+				"- Display all %d teams prominently\n"+
+				"- Display the players underneath their respective teams\n"+
 				"%s"+
-				"* Date, time and venue at the bottom\n"+
-				"* Strong hierarchy and mobile readability\n\n"+
-				"**IMPORTANT:**\n"+
-				"Feature ALL %d teams listed in the MATCH section. Use exact provided text only. Do not invent players, scores, logos, sponsors, or extra information. No professional club branding.",
-			sportLower, sportLower, sportLower, matchSection, dateStr, timeStr, venueName, teamCount, layoutVs, teamCount,
+				"- Display date, time and venue clearly at the bottom\n"+
+				"- Keep the layout balanced and uncluttered\n"+
+				"- Make all important information readable on a mobile screen\n\n"+
+
+				"TEXT ACCURACY:\n"+
+				"- Use the provided team names and player names exactly as written\n"+
+				"- Preserve exact spelling, capitalization, numbers and punctuation\n"+
+				"- Do not rewrite, abbreviate or modify any provided text\n"+
+				"- Do not omit any team or player\n"+
+				"- All %d teams must appear in the final poster\n"+
+				"- Treat all provided information as fixed text that must be rendered accurately\n\n"+
+
+				"DO NOT ADD:\n"+
+				"- No invented players\n"+
+				"- No scores\n"+
+				"- No sponsors\n"+
+				"- No hashtags\n"+
+				"- No extra text\n"+
+				"- No professional club logos or branding\n"+
+				"- No fictional team information\n\n"+
+
+				"Create a polished, premium recreational sports poster with highly accurate typography and a professional modern composition.",
+			sportLower,
+			sportLower,
+			sportLower,
+			matchSection,
+			dateStr,
+			timeStr,
+			venueName,
+			teamCount,
+			layoutVs,
+			teamCount,
 		)
 
 		imgBytes, genErr := imageClient.Generate(c.Request.Context(), prompt)
@@ -2159,6 +2235,60 @@ func teamCode(i int) string {
 		return codes[i]
 	}
 	return fmt.Sprintf("T%d", i+1)
+}
+
+func resolveVenue(venue, mapURL string) (string, string) {
+	venue = strings.TrimSpace(venue)
+	mapURL = strings.TrimSpace(mapURL)
+
+	isURL := func(s string) bool {
+		lower := strings.ToLower(s)
+		return strings.HasPrefix(lower, "http://") ||
+			strings.HasPrefix(lower, "https://") ||
+			strings.HasPrefix(lower, "maps.app.goo.gl") ||
+			strings.HasPrefix(lower, "goo.gl/maps") ||
+			strings.HasPrefix(lower, "maps.google.") ||
+			strings.HasPrefix(lower, "www.google.com/maps")
+	}
+
+	normalizeURL := func(s string) string {
+		s = strings.TrimSpace(s)
+		lower := strings.ToLower(s)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			return "https://" + s
+		}
+		return s
+	}
+
+	if mapURL != "" && isURL(mapURL) {
+		mapURL = normalizeURL(mapURL)
+	}
+
+	if isURL(venue) {
+		if mapURL == "" {
+			mapURL = normalizeURL(venue)
+		}
+		return venue, mapURL
+	}
+
+	words := strings.Fields(venue)
+	var textWords []string
+	for _, w := range words {
+		if isURL(w) {
+			if mapURL == "" {
+				mapURL = normalizeURL(w)
+			}
+		} else {
+			textWords = append(textWords, w)
+		}
+	}
+
+	if len(textWords) > 0 && mapURL != "" && len(textWords) < len(words) {
+		venue = strings.Join(textWords, " ")
+		venue = strings.Trim(venue, " -:,|")
+	}
+
+	return venue, mapURL
 }
 
 var _ = http.MethodGet

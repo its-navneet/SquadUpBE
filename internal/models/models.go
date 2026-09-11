@@ -204,6 +204,8 @@ type Match struct {
 	GroupID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
 	SportID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"sport_id"`
 	VenueID         *uuid.UUID `gorm:"type:uuid" json:"venue_id,omitempty"`
+	Venue           string     `json:"venue,omitempty"`
+	VenueMapURL     string     `json:"venue_map_url,omitempty"`
 	Name            string     `gorm:"not null" json:"name"`
 	ScheduledAt     time.Time  `gorm:"not null" json:"scheduled_at"`
 	DurationMinutes int        `json:"duration_minutes"`
