@@ -69,6 +69,8 @@ type User struct {
 	Bio             string       `json:"bio"`
 	Position        string       `json:"position"`
 	KitNumber       int          `json:"kit_number"`
+	FavouriteClub   string       `json:"favourite_club"`
+	FavouritePlayer string       `json:"favourite_player"`
 	CareerMatches   int          `json:"career_matches"`
 	CareerGoals     int          `json:"career_goals"`
 	CareerAssists   int          `json:"career_assists"`

@@ -44,6 +44,13 @@ func main() {
 		log.Fatal(e)
 	}
 	seed(db)
+	go func() {
+		var groupIDs []uuid.UUID
+		db.Model(&models.Match{}).Where("finalized_at IS NOT NULL").Distinct("group_id").Pluck("group_id", &groupIDs)
+		for _, gid := range groupIDs {
+			_ = match.RecalculateGroupStats(db, gid)
+		}
+	}()
 	as := auth.New(cfg.JWTSecret)
 	hub := ws.New()
 	presence := ws.NewPresenceTracker()
@@ -224,12 +231,7 @@ func main() {
 		var stats []models.PlayerStatistics
 		db.Where("user_id = ?", u.ID).Find(&stats)
 
-		cs := &models.CareerStats{
-			Matches: u.CareerMatches,
-			Goals:   u.CareerGoals,
-			Assists: u.CareerAssists,
-			MVP:     u.CareerMVPs,
-		}
+		cs := &models.CareerStats{}
 
 		for _, s := range stats {
 			cs.Matches += s.Matches
@@ -257,6 +259,20 @@ func main() {
 		u.CareerStats = computeCareerStats(&u)
 		c.JSON(200, gin.H{"success": true, "data": u})
 	})
+	sec.GET("/users/:id", func(c *gin.Context) {
+		uid := mustUUID(c.Param("id"))
+		if uid == uuid.Nil {
+			c.JSON(400, err("invalid user id"))
+			return
+		}
+		var u models.User
+		if e := db.First(&u, uid).Error; e != nil {
+			c.JSON(404, err("user not found"))
+			return
+		}
+		u.CareerStats = computeCareerStats(&u)
+		c.JSON(200, gin.H{"success": true, "data": u})
+	})
 	sec.PUT("/users/me", func(c *gin.Context) {
 		uid := mustUUID(auth.UserID(c))
 		var in struct {
@@ -269,6 +285,8 @@ func main() {
 			ProfilePhotoURL *string  `json:"profile_photo_url"`
 			Position        *string  `json:"position"`
 			KitNumber       *int     `json:"kit_number"`
+			FavouriteClub   *string  `json:"favourite_club"`
+			FavouritePlayer *string  `json:"favourite_player"`
 		}
 		if c.BindJSON(&in) != nil {
 			c.JSON(400, err("invalid request"))
@@ -306,6 +324,12 @@ func main() {
 		}
 		if in.KitNumber != nil {
 			updates["kit_number"] = *in.KitNumber
+		}
+		if in.FavouriteClub != nil {
+			updates["favourite_club"] = strings.TrimSpace(*in.FavouriteClub)
+		}
+		if in.FavouritePlayer != nil {
+			updates["favourite_player"] = strings.TrimSpace(*in.FavouritePlayer)
 		}
 		if len(updates) > 0 {
 			if e := db.Model(&u).Updates(updates).Error; e != nil {
@@ -396,6 +420,48 @@ func main() {
 		var us []models.User
 		if len(ids) > 0 {
 			db.Where("id IN ?", ids).Find(&us)
+			type UserCareerAgg struct {
+				UserID      uuid.UUID `gorm:"column:user_id"`
+				Matches     int       `gorm:"column:matches"`
+				Wins        int       `gorm:"column:wins"`
+				Draws       int       `gorm:"column:draws"`
+				Losses      int       `gorm:"column:losses"`
+				Goals       int       `gorm:"column:goals"`
+				Assists     int       `gorm:"column:assists"`
+				MVP         int       `gorm:"column:mvp"`
+				CleanSheets int       `gorm:"column:clean_sheets"`
+			}
+			var aggs []UserCareerAgg
+			db.Table("player_statistics").
+				Select("user_id, SUM(matches) as matches, SUM(wins) as wins, SUM(draws) as draws, SUM(losses) as losses, SUM(goals) as goals, SUM(assists) as assists, SUM(mvp) as mvp, SUM(clean_sheets) as clean_sheets").
+				Where("user_id IN ?", ids).
+				Group("user_id").
+				Scan(&aggs)
+			aggMap := make(map[uuid.UUID]UserCareerAgg)
+			for _, a := range aggs {
+				aggMap[a.UserID] = a
+			}
+			for i := range us {
+				if a, ok := aggMap[us[i].ID]; ok {
+					winRate := 0.0
+					if a.Matches > 0 {
+						winRate = math.Round((float64(a.Wins)/float64(a.Matches))*1000) / 10
+					}
+					us[i].CareerStats = &models.CareerStats{
+						Matches:     a.Matches,
+						Wins:        a.Wins,
+						Draws:       a.Draws,
+						Losses:      a.Losses,
+						Goals:       a.Goals,
+						Assists:     a.Assists,
+						MVP:         a.MVP,
+						CleanSheets: a.CleanSheets,
+						WinRate:     winRate,
+					}
+				} else {
+					us[i].CareerStats = &models.CareerStats{}
+				}
+			}
 		}
 		c.JSON(200, gin.H{"success": true, "data": gin.H{"members": msx, "users": us}})
 	})

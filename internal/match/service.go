@@ -277,6 +277,11 @@ func (s *Service) Finalize(id uuid.UUID, result *models.MatchResult) error {
 	return err
 }
 
+// RecalculateGroupStats recalculates player_statistics for all finalized matches in groupID.
+func RecalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
+	return recalculateGroupStats(tx, groupID)
+}
+
 func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 	var matches []models.Match
 	if err := tx.Where("group_id = ? AND finalized_at IS NOT NULL", groupID).Find(&matches).Error; err != nil {
