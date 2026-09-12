@@ -3,6 +3,7 @@ package models_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"squadup/backend/internal/models"
 )
@@ -124,5 +125,115 @@ func TestUserMediaSignerPresignsPhoto(t *testing.T) {
 	expected := "https://presigned.s3.amazonaws.com/my-bucket/profiles/leo.jpg?signature=abc"
 	if m["profile_photo_url"] != expected {
 		t.Errorf("expected %q, got %q", expected, m["profile_photo_url"])
+	}
+}
+
+func TestUserPositionAndKitNumberSerialization(t *testing.T) {
+	rawJSON := `{
+		"name": "Luka Modric",
+		"email": "luka@squadup.app",
+		"position": "MID",
+		"kit_number": 10
+	}`
+
+	var u models.User
+	if err := json.Unmarshal([]byte(rawJSON), &u); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if u.Position != "MID" {
+		t.Errorf("expected position MID, got %s", u.Position)
+	}
+	if u.KitNumber != 10 {
+		t.Errorf("expected kit_number 10, got %d", u.KitNumber)
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if m["position"] != "MID" {
+		t.Errorf("expected position MID in JSON, got %v", m["position"])
+	}
+	if m["kit_number"] != float64(10) {
+		t.Errorf("expected kit_number 10 in JSON, got %v", m["kit_number"])
+	}
+}
+
+func TestCalculateAgeFromDOB(t *testing.T) {
+	// Empty DOB
+	if _, err := models.CalculateAgeFromDOB(""); err == nil {
+		t.Error("expected error for empty DOB")
+	}
+
+	// Invalid format
+	if _, err := models.CalculateAgeFromDOB("not-a-date"); err == nil {
+		t.Error("expected error for invalid DOB string")
+	}
+
+	// Exactly 20 years ago
+	now := time.Now()
+	dob20 := now.AddDate(-20, 0, 0).Format("2006-01-02")
+	age20, err := models.CalculateAgeFromDOB(dob20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if age20 != 20 {
+		t.Errorf("expected 20, got %d", age20)
+	}
+
+	// Birthday was yesterday (25 years ago + 1 day older)
+	dobYesterday := now.AddDate(-25, 0, -1).Format("2006-01-02")
+	ageYesterday, err := models.CalculateAgeFromDOB(dobYesterday)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ageYesterday != 25 {
+		t.Errorf("expected 25, got %d", ageYesterday)
+	}
+
+	// Birthday is tomorrow (turning 25 tomorrow, so currently 24)
+	dobTomorrow := now.AddDate(-25, 0, 1).Format("2006-01-02")
+	ageTomorrow, err := models.CalculateAgeFromDOB(dobTomorrow)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ageTomorrow != 24 {
+		t.Errorf("expected 24, got %d", ageTomorrow)
+	}
+}
+
+func TestUserDateOfBirthDynamicAgeSerialization(t *testing.T) {
+	now := time.Now()
+	dobStr := now.AddDate(-22, 0, 0).Format("2006-01-02")
+
+	u := models.User{
+		Name:        "Jude Bellingham",
+		Email:       "jude@squadup.app",
+		DateOfBirth: dobStr,
+		Age:         0, // Age in struct is 0, but MarshalJSON should calculate 22
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if m["date_of_birth"] != dobStr {
+		t.Errorf("expected date_of_birth %s, got %v", dobStr, m["date_of_birth"])
+	}
+	if m["age"] != float64(22) {
+		t.Errorf("expected age 22 dynamically calculated in JSON, got %v", m["age"])
 	}
 }

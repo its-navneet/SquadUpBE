@@ -2,6 +2,8 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,30 @@ import (
 
 // MediaSigner is an optional callback hook to generate presigned S3 URLs on JSON serialization.
 var MediaSigner func(bucket, key, rawURL string) string
+
+// CalculateAgeFromDOB computes the age in years from a YYYY-MM-DD or RFC3339 date of birth string.
+func CalculateAgeFromDOB(dobStr string) (int, error) {
+	dobStr = strings.TrimSpace(dobStr)
+	if dobStr == "" {
+		return 0, fmt.Errorf("date of birth cannot be empty")
+	}
+	dob, err := time.Parse("2006-01-02", dobStr)
+	if err != nil {
+		dob, err = time.Parse(time.RFC3339, dobStr)
+		if err != nil {
+			return 0, fmt.Errorf("invalid date of birth format, expected YYYY-MM-DD")
+		}
+	}
+	now := time.Now()
+	years := now.Year() - dob.Year()
+	if now.Month() < dob.Month() || (now.Month() == dob.Month() && now.Day() < dob.Day()) {
+		years--
+	}
+	if years < 0 {
+		return 0, nil
+	}
+	return years, nil
+}
 
 // ============================================================
 // Base
@@ -65,6 +91,7 @@ type User struct {
 	Name               string       `gorm:"not null" json:"name"`
 	Email              string       `gorm:"uniqueIndex;not null" json:"email"`
 	PasswordHash       string       `gorm:"not null" json:"-"`
+	DateOfBirth        string       `gorm:"type:varchar(10)" json:"date_of_birth"`
 	Age                int          `json:"age"`
 	HeightCM           float64      `json:"height_cm"`
 	WeightKG           float64      `json:"weight_kg"`
@@ -90,11 +117,19 @@ func (u User) MarshalJSON() ([]byte, error) {
 	if MediaSigner != nil && (u.ProfilePhotoKey != "" || photo != "") {
 		photo = MediaSigner(u.ProfilePhotoBucket, u.ProfilePhotoKey, photo)
 	}
+	age := u.Age
+	if u.DateOfBirth != "" {
+		if calcAge, err := CalculateAgeFromDOB(u.DateOfBirth); err == nil && calcAge >= 0 {
+			age = calcAge
+		}
+	}
 	return json.Marshal(&struct {
 		Alias
+		Age             int    `json:"age"`
 		ProfilePhotoURL string `json:"profile_photo_url"`
 	}{
 		Alias:           Alias(u),
+		Age:             age,
 		ProfilePhotoURL: photo,
 	})
 }

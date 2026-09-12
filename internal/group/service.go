@@ -2,6 +2,7 @@ package group
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"squadup/backend/internal/models"
@@ -41,6 +42,20 @@ func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinReques
 		if c > 0 {
 			return errors.New("already a member")
 		}
+
+		var requester models.User
+		if e := tx.First(&requester, uid).Error; e == nil && requester.KitNumber > 0 {
+			var conflictUser models.User
+			err := tx.Table("group_members").
+				Joins("JOIN users ON users.id = group_members.user_id").
+				Where("group_members.group_id = ? AND group_members.status = 'ACTIVE' AND group_members.user_id != ? AND users.kit_number = ?", g.ID, uid, requester.KitNumber).
+				Select("users.*").
+				First(&conflictUser).Error
+			if err == nil {
+				return fmt.Errorf("jersey number #%d is already taken by %s in this squad. Please change your jersey number in profile before joining.", requester.KitNumber, conflictUser.Name)
+			}
+		}
+
 		var existing models.GroupJoinRequest
 		if e := tx.Where("group_id=? AND user_id=? AND status='PENDING'", g.ID, uid).Order("created_at ASC").First(&existing).Error; e == nil {
 			r = existing
@@ -50,8 +65,6 @@ func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinReques
 		if e := tx.Create(&r).Error; e != nil {
 			return e
 		}
-		var requester models.User
-		tx.First(&requester, uid)
 		adminUserIDs := make(map[uuid.UUID]bool)
 		if g.OwnerID != uuid.Nil {
 			adminUserIDs[g.OwnerID] = true
@@ -89,6 +102,19 @@ func (s *Service) Approve(reqID, adminID uuid.UUID) (models.GroupJoinRequest, er
 		if e := tx.Where("group_id=? AND user_id=? AND status='ACTIVE'", r.GroupID, adminID).First(&m).Error; e != nil || !(m.Role == "OWNER" || m.Role == "ADMIN") {
 			return errors.New("forbidden")
 		}
+		var requester models.User
+		if e := tx.First(&requester, r.UserID).Error; e == nil && requester.KitNumber > 0 {
+			var conflictUser models.User
+			err := tx.Table("group_members").
+				Joins("JOIN users ON users.id = group_members.user_id").
+				Where("group_members.group_id = ? AND group_members.status = 'ACTIVE' AND group_members.user_id != ? AND users.kit_number = ?", r.GroupID, r.UserID, requester.KitNumber).
+				Select("users.*").
+				First(&conflictUser).Error
+			if err == nil {
+				return fmt.Errorf("cannot approve: jersey number #%d is already taken by %s in this squad", requester.KitNumber, conflictUser.Name)
+			}
+		}
+
 		r.Status = "APPROVED"
 		r.ReviewedByID = &adminID
 		if e := tx.Save(&r).Error; e != nil {

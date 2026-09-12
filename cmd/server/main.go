@@ -197,6 +197,7 @@ func main() {
 			Name               string  `json:"name"`
 			Email              string  `json:"email"`
 			Password           string  `json:"password"`
+			DateOfBirth        string  `json:"date_of_birth"`
 			Age                int     `json:"age"`
 			HeightCM           float64 `json:"height_cm"`
 			WeightKG           float64 `json:"weight_kg"`
@@ -205,6 +206,8 @@ func main() {
 			ProfilePhotoURL    string  `json:"profile_photo_url"`
 			ProfilePhotoBucket string  `json:"profile_photo_bucket"`
 			ProfilePhotoKey    string  `json:"profile_photo_key"`
+			Position           string  `json:"position"`
+			KitNumber          int     `json:"kit_number"`
 		}
 		if c.BindJSON(&in) != nil || in.Name == "" || len(in.Password) < 8 {
 			c.JSON(400, err("name/email/password(8+) required"))
@@ -214,6 +217,34 @@ func main() {
 		if e != nil {
 			c.JSON(500, err("password hashing failed"))
 			return
+		}
+
+		cleanDOB := strings.TrimSpace(in.DateOfBirth)
+		computedAge := in.Age
+		if cleanDOB != "" {
+			calcAge, errVal := models.CalculateAgeFromDOB(cleanDOB)
+			if errVal != nil {
+				c.JSON(400, err("invalid date of birth format, expected YYYY-MM-DD"))
+				return
+			}
+			if calcAge < 5 || calcAge > 120 {
+				c.JSON(400, err("age calculated from date of birth must be between 5 and 120"))
+				return
+			}
+			computedAge = calcAge
+		} else if computedAge < 5 || computedAge > 120 {
+			c.JSON(400, err("date of birth is required"))
+			return
+		}
+
+		if in.KitNumber < 0 || in.KitNumber > 99 {
+			c.JSON(400, err("jersey number must be between 1 and 99"))
+			return
+		}
+
+		pos := normalizePosition(in.Position)
+		if pos == "" {
+			pos = "MID"
 		}
 
 		photoURL := cleanStoredURL(in.ProfilePhotoURL)
@@ -230,7 +261,8 @@ func main() {
 			Name:               in.Name,
 			Email:              strings.ToLower(strings.TrimSpace(in.Email)),
 			PasswordHash:       hash,
-			Age:                in.Age,
+			DateOfBirth:        cleanDOB,
+			Age:                computedAge,
 			HeightCM:           in.HeightCM,
 			WeightKG:           in.WeightKG,
 			PreferredFoot:      in.PreferredFoot,
@@ -238,6 +270,8 @@ func main() {
 			ProfilePhotoURL:    photoURL,
 			ProfilePhotoBucket: photoBucket,
 			ProfilePhotoKey:    photoKey,
+			Position:           pos,
+			KitNumber:          in.KitNumber,
 		}
 		if e = db.Create(&u).Error; e != nil {
 			c.JSON(409, err("email already registered"))
@@ -312,6 +346,7 @@ func main() {
 		uid := mustUUID(auth.UserID(c))
 		var in struct {
 			Name               *string  `json:"name"`
+			DateOfBirth        *string  `json:"date_of_birth"`
 			Age                *int     `json:"age"`
 			HeightCM           *float64 `json:"height_cm"`
 			WeightKG           *float64 `json:"weight_kg"`
@@ -338,7 +373,27 @@ func main() {
 		if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
 			updates["name"] = strings.TrimSpace(*in.Name)
 		}
-		if in.Age != nil {
+		if in.DateOfBirth != nil && strings.TrimSpace(*in.DateOfBirth) != "" {
+			cleanDOB := strings.TrimSpace(*in.DateOfBirth)
+			if u.DateOfBirth != "" && cleanDOB != u.DateOfBirth {
+				c.JSON(400, err("date of birth cannot be modified"))
+				return
+			}
+			if u.DateOfBirth == "" {
+				calcAge, errVal := models.CalculateAgeFromDOB(cleanDOB)
+				if errVal != nil {
+					c.JSON(400, err("invalid date of birth format, expected YYYY-MM-DD"))
+					return
+				}
+				if calcAge < 5 || calcAge > 120 {
+					c.JSON(400, err("age calculated from date of birth must be between 5 and 120"))
+					return
+				}
+				updates["date_of_birth"] = cleanDOB
+				updates["age"] = calcAge
+			}
+		}
+		if in.Age != nil && u.DateOfBirth == "" && updates["date_of_birth"] == nil {
 			updates["age"] = *in.Age
 		}
 		if in.HeightCM != nil {
@@ -394,7 +449,36 @@ func main() {
 			updates["position"] = normalizePosition(*in.Position)
 		}
 		if in.KitNumber != nil {
-			updates["kit_number"] = *in.KitNumber
+			newKit := *in.KitNumber
+			if newKit < 0 || newKit > 99 {
+				c.JSON(400, err("jersey number must be between 1 and 99"))
+				return
+			}
+			if newKit > 0 && newKit != u.KitNumber {
+				var activeGroupIDs []uuid.UUID
+				db.Model(&models.GroupMember{}).
+					Where("user_id = ? AND status = 'ACTIVE'", uid).
+					Pluck("group_id", &activeGroupIDs)
+
+				if len(activeGroupIDs) > 0 {
+					type ConflictInfo struct {
+						GroupName string
+						UserName  string
+					}
+					var conflict ConflictInfo
+					cErr := db.Table("group_members").
+						Joins("JOIN users ON users.id = group_members.user_id").
+						Joins("JOIN groups ON groups.id = group_members.group_id").
+						Where("group_members.group_id IN ? AND group_members.status = 'ACTIVE' AND group_members.user_id != ? AND users.kit_number = ?", activeGroupIDs, uid, newKit).
+						Select("groups.name as group_name, users.name as user_name").
+						First(&conflict).Error
+					if cErr == nil {
+						c.JSON(409, err(fmt.Sprintf("jersey number #%d is already taken by %s in %s", newKit, conflict.UserName, conflict.GroupName)))
+						return
+					}
+				}
+			}
+			updates["kit_number"] = newKit
 		}
 		if in.FavouriteClub != nil {
 			updates["favourite_club"] = strings.TrimSpace(*in.FavouriteClub)
