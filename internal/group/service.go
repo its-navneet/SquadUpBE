@@ -3,6 +3,7 @@ package group
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"squadup/backend/internal/models"
@@ -15,6 +16,17 @@ import (
 type Service struct{ DB *gorm.DB }
 
 func New(db *gorm.DB) *Service { return &Service{db} }
+
+func cleanInviteCode(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.LastIndex(strings.ToLower(raw), "invite code:"); idx != -1 {
+		raw = strings.TrimSpace(raw[idx+len("invite code:"):])
+	} else if idx := strings.LastIndex(strings.ToLower(raw), "code:"); idx != -1 {
+		raw = strings.TrimSpace(raw[idx+len("code:"):])
+	}
+	raw = strings.Trim(raw, `"'“‘”’.,;:!?`)
+	return strings.TrimSpace(raw)
+}
 
 func (s *Service) Create(name, desc, city, privacy string, sportID, owner uuid.UUID) (models.Group, error) {
 	var g models.Group
@@ -30,17 +42,27 @@ func (s *Service) Create(name, desc, city, privacy string, sportID, owner uuid.U
 }
 
 func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinRequest, error) {
+	code = cleanInviteCode(code)
+	if code == "" {
+		return models.GroupJoinRequest{}, errors.New("invite code is required")
+	}
+
 	var g models.Group
-	r := models.GroupJoinRequest{GroupID: g.ID, UserID: uid, Status: "PENDING"}
+	var r models.GroupJoinRequest
 	e := s.DB.Transaction(func(tx *gorm.DB) error {
 		// Lock the group row so concurrent taps cannot create duplicate requests.
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("invite_code=?", code).First(&g).Error; e != nil {
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("LOWER(invite_code) = LOWER(?)", code).
+			First(&g).Error; e != nil {
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return errors.New("invalid or expired squad invite code")
+			}
 			return e
 		}
 		var c int64
 		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", g.ID, uid).Count(&c)
 		if c > 0 {
-			return errors.New("already a member")
+			return errors.New("already a member of this squad")
 		}
 
 		var requester models.User
@@ -54,6 +76,35 @@ func (s *Service) JoinByCode(code string, uid uuid.UUID) (models.GroupJoinReques
 			if err == nil {
 				return fmt.Errorf("jersey number #%d is already taken by %s in this squad. Please change your jersey number in profile before joining.", requester.KitNumber, conflictUser.Name)
 			}
+		}
+
+		// If the group is PUBLIC, join directly as ACTIVE member!
+		if strings.ToUpper(g.Privacy) == "PUBLIC" {
+			var mem models.GroupMember
+			if e := tx.Where("group_id=? AND user_id=?", g.ID, uid).First(&mem).Error; e == nil {
+				mem.Status = "ACTIVE"
+				mem.Role = "MEMBER"
+				if e := tx.Save(&mem).Error; e != nil {
+					return e
+				}
+			} else {
+				mem = models.GroupMember{
+					GroupID:  g.ID,
+					UserID:   uid,
+					Role:     "MEMBER",
+					Status:   "ACTIVE",
+					JoinedAt: time.Now(),
+				}
+				if e := tx.Create(&mem).Error; e != nil {
+					return e
+				}
+			}
+			r = models.GroupJoinRequest{
+				GroupID: g.ID,
+				UserID:  uid,
+				Status:  "APPROVED",
+			}
+			return nil
 		}
 
 		var existing models.GroupJoinRequest
