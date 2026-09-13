@@ -25,6 +25,7 @@ import (
 	"squadup/backend/internal/limiter"
 	"squadup/backend/internal/match"
 	"squadup/backend/internal/models"
+	"squadup/backend/internal/push"
 	"squadup/backend/internal/rating"
 	"squadup/backend/internal/storage"
 	"squadup/backend/internal/team"
@@ -59,6 +60,20 @@ func main() {
 	gs := group.New(db)
 	rs := rating.New(db)
 	ms := match.New(db, hub)
+	pushService := push.New(db, cfg.FirebaseProjectID, cfg.FirebaseCredentialsPath, cfg.FirebaseCredentialsJSON)
+	models.PushDispatcher = func(userID uuid.UUID, groupID *uuid.UUID, nType, title, message, entityType string, entityID *uuid.UUID) {
+		data := map[string]string{
+			"type":        nType,
+			"entity_type": entityType,
+		}
+		if entityID != nil {
+			data["entity_id"] = entityID.String()
+		}
+		if groupID != nil {
+			data["group_id"] = groupID.String()
+		}
+		pushService.SendPush([]uuid.UUID{userID}, title, message, data)
+	}
 	imageClient := client.NewImageClient(
 		cfg.ImageGenURL,
 		cfg.ImageGenKey,
@@ -509,6 +524,35 @@ func main() {
 		}
 		u.CareerStats = computeCareerStats(&u)
 		c.JSON(200, gin.H{"success": true, "data": u})
+	})
+	sec.POST("/users/device-token", func(c *gin.Context) {
+		uid := mustUUID(auth.UserID(c))
+		var in struct {
+			Token    string `json:"token"`
+			Platform string `json:"platform"`
+		}
+		if e := c.BindJSON(&in); e != nil || strings.TrimSpace(in.Token) == "" {
+			c.JSON(400, err("valid token is required"))
+			return
+		}
+		if in.Platform == "" {
+			in.Platform = "android"
+		}
+		if e := pushService.RegisterToken(uid, in.Token, in.Platform); e != nil {
+			c.JSON(500, err("failed to register device token"))
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "message": "device token registered"})
+	})
+	sec.DELETE("/users/device-token", func(c *gin.Context) {
+		var in struct {
+			Token string `json:"token"`
+		}
+		_ = c.BindJSON(&in)
+		if strings.TrimSpace(in.Token) != "" {
+			_ = pushService.DeleteToken(in.Token)
+		}
+		c.JSON(200, gin.H{"success": true, "message": "device token removed"})
 	})
 	sec.GET("/sports", func(c *gin.Context) {
 		var s []models.Sport
@@ -2045,6 +2089,8 @@ func main() {
 			c.JSON(500, err(e.Error()))
 			return
 		}
+
+		notifyGroupMembers(db, m.GroupID, nil, "SQUADS_GENERATED", "Balanced Squads Generated ⚔️", fmt.Sprintf("Squads have been generated for '%s'. Check your team assignment!", m.Name), "MATCH", &mid)
 
 		c.JSON(200, gin.H{
 			"success": true,

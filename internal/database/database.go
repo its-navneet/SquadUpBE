@@ -23,5 +23,5 @@ func Open(dsn string) *gorm.DB {
 	return db
 }
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(&models.Sport{}, &models.SportPosition{}, &models.User{}, &models.SportProfile{}, &models.Group{}, &models.GroupMember{}, &models.GroupJoinRequest{}, &models.ChatMessage{}, &models.ChatMessageRead{}, &models.Venue{}, &models.Match{}, &models.Attendance{}, &models.Team{}, &models.TeamMember{}, &models.MatchEvent{}, &models.MatchResult{}, &models.PlayerRating{}, &models.PlayerRatingAttribute{}, &models.PlayerStatistics{}, &models.Notification{}, &models.AuditLog{})
+	return db.AutoMigrate(&models.Sport{}, &models.SportPosition{}, &models.User{}, &models.SportProfile{}, &models.Group{}, &models.GroupMember{}, &models.GroupJoinRequest{}, &models.ChatMessage{}, &models.ChatMessageRead{}, &models.Venue{}, &models.Match{}, &models.Attendance{}, &models.Team{}, &models.TeamMember{}, &models.MatchEvent{}, &models.MatchResult{}, &models.PlayerRating{}, &models.PlayerRatingAttribute{}, &models.PlayerStatistics{}, &models.Notification{}, &models.DeviceToken{}, &models.AuditLog{})
 }

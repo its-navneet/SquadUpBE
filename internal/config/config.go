@@ -6,23 +6,26 @@ import (
 )
 
 type Config struct {
-	Port                string
-	DatabaseURL         string
-	JWTSecret           string
-	CORSOrigins         string
-	ImageGenURL         string
-	ImageGenKey         string
-	RateLimitEnabled    bool
-	RateLimitRPS        float64
-	RateLimitBurst      int
-	AuthRateLimitRPM    int
-	AuthRateLimitBurst  int
-	AWSRegion           string
-	AWSAccessKeyID      string
-	AWSSecretAccessKey  string
-	AWSS3Bucket         string
-	AWSS3Endpoint       string
-	AWSS3ForcePathStyle bool
+	Port                    string
+	DatabaseURL             string
+	JWTSecret               string
+	CORSOrigins             string
+	ImageGenURL             string
+	ImageGenKey             string
+	RateLimitEnabled        bool
+	RateLimitRPS            float64
+	RateLimitBurst          int
+	AuthRateLimitRPM        int
+	AuthRateLimitBurst      int
+	AWSRegion               string
+	AWSAccessKeyID          string
+	AWSSecretAccessKey      string
+	AWSS3Bucket             string
+	AWSS3Endpoint           string
+	AWSS3ForcePathStyle     bool
+	FirebaseProjectID       string
+	FirebaseCredentialsPath string
+	FirebaseCredentialsJSON string
 }
 
 func parseBool(val string, def bool) bool {
@@ -114,23 +117,29 @@ func Load() Config {
 	loadEnvFile("../.env")
 
 	c := Config{
-		Port:                os.Getenv("PORT"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		JWTSecret:           os.Getenv("JWT_SECRET"),
-		CORSOrigins:         os.Getenv("CORS_ORIGINS"),
-		ImageGenURL:         os.Getenv("IMAGE_GENERATION_URL"),
-		ImageGenKey:         os.Getenv("IMAGE_GENERATION_API_KEY"),
-		RateLimitEnabled:    parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
-		RateLimitRPS:        parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
-		RateLimitBurst:      parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
-		AuthRateLimitRPM:    parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
-		AuthRateLimitBurst:  parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
-		AWSRegion:           getEnvFirst("AWS_REGION", "AWS_DEFAULT_REGION", "S3_REGION"),
-		AWSAccessKeyID:      getEnvFirst("AWS_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID"),
-		AWSSecretAccessKey:  getEnvFirst("AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY"),
-		AWSS3Bucket:         getEnvFirst("AWS_S3_BUCKET", "AWS_BUCKET_NAME", "S3_BUCKET_NAME"),
-		AWSS3Endpoint:       getEnvFirst("AWS_S3_ENDPOINT", "S3_ENDPOINT"),
-		AWSS3ForcePathStyle: parseBool(getEnvFirst("AWS_S3_FORCE_PATH_STYLE", "S3_FORCE_PATH_STYLE"), false),
+		Port:                    os.Getenv("PORT"),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		JWTSecret:               os.Getenv("JWT_SECRET"),
+		CORSOrigins:             os.Getenv("CORS_ORIGINS"),
+		ImageGenURL:             os.Getenv("IMAGE_GENERATION_URL"),
+		ImageGenKey:             os.Getenv("IMAGE_GENERATION_API_KEY"),
+		RateLimitEnabled:        parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
+		RateLimitRPS:            parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
+		RateLimitBurst:          parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),
+		AuthRateLimitRPM:        parseInt(os.Getenv("AUTH_RATE_LIMIT_RPM"), 10),
+		AuthRateLimitBurst:      parseInt(os.Getenv("AUTH_RATE_LIMIT_BURST"), 5),
+		AWSRegion:               getEnvFirst("AWS_REGION", "AWS_DEFAULT_REGION", "S3_REGION"),
+		AWSAccessKeyID:          getEnvFirst("AWS_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID"),
+		AWSSecretAccessKey:      getEnvFirst("AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY"),
+		AWSS3Bucket:             getEnvFirst("AWS_S3_BUCKET", "AWS_BUCKET_NAME", "S3_BUCKET_NAME"),
+		AWSS3Endpoint:           getEnvFirst("AWS_S3_ENDPOINT", "S3_ENDPOINT"),
+		AWSS3ForcePathStyle:     parseBool(getEnvFirst("AWS_S3_FORCE_PATH_STYLE", "S3_FORCE_PATH_STYLE"), false),
+		FirebaseProjectID:       getEnvFirst("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"),
+		FirebaseCredentialsPath: getEnvFirst("FIREBASE_CREDENTIALS_PATH", "FIREBASE_SERVICE_ACCOUNT_KEY_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
+		FirebaseCredentialsJSON: getEnvFirst("FIREBASE_CREDENTIALS_JSON", "FIREBASE_SERVICE_ACCOUNT_JSON"),
+	}
+	if c.FirebaseProjectID == "" {
+		c.FirebaseProjectID = "squadup-32af8"
 	}
 	if c.AWSRegion == "" {
 		c.AWSRegion = "ap-south-1"

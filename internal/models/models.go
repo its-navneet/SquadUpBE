@@ -444,6 +444,27 @@ type Notification struct {
 	ReadAt     *time.Time `json:"read_at,omitempty"`
 }
 
+var PushDispatcher func(userID uuid.UUID, groupID *uuid.UUID, nType, title, message, entityType string, entityID *uuid.UUID)
+
+func (n *Notification) AfterCreate(tx *gorm.DB) error {
+	if PushDispatcher != nil {
+		PushDispatcher(n.UserID, n.GroupID, n.Type, n.Title, n.Message, n.EntityType, n.EntityID)
+	}
+	return nil
+}
+
+// ============================================================
+// Device Token (FCM Push Notifications)
+// ============================================================
+
+type DeviceToken struct {
+	Base
+
+	UserID   uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	Token    string    `gorm:"type:text;uniqueIndex;not null" json:"token"`
+	Platform string    `gorm:"type:varchar(32)" json:"platform"`
+}
+
 // ============================================================
 // Audit Log
 // ============================================================

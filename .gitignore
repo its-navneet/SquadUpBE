@@ -10,6 +10,9 @@ bin/
 # Environment
 .env
 
-# macOS metadata
+# Firebase service account private keys
+*firebase-*.json
+firebase-service-account.json
+
 .DS_Store
 
