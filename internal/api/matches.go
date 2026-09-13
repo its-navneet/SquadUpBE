@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -24,13 +25,13 @@ func (s *Server) ServePosterImage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid match id"})
 		return
 	}
-	filePath := filepath.Join("uploads", "posters", fmt.Sprintf("%s.png", mid))
-	if _, statErr := os.Stat(filePath); os.IsNotExist(statErr) {
+	posterPath := filepath.Join("uploads", "match-posters", fmt.Sprintf("%s.png", mid))
+	if _, err := os.Stat(posterPath); os.IsNotExist(err) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "poster image not found"})
 		return
 	}
 	c.Header("Cache-Control", "public, max-age=86400")
-	c.File(filePath)
+	c.File(posterPath)
 }
 
 func (s *Server) CreateMatch(c *gin.Context) {
@@ -129,13 +130,18 @@ func (s *Server) MatchMembershipMiddleware() gin.HandlerFunc {
 			return
 		}
 		var m models.Match
-		if e := s.db.First(&m, id).Error; e != nil {
-			if e == gorm.ErrRecordNotFound {
-				c.AbortWithStatusJSON(404, err("match not found"))
-			} else {
-				c.AbortWithStatusJSON(500, err("could not load match"))
+		cacheKey := "squadup:cache:match:" + id.String()
+		found, _ := s.cache.Get(c.Request.Context(), cacheKey, &m)
+		if !found {
+			if e := s.db.First(&m, id).Error; e != nil {
+				if e == gorm.ErrRecordNotFound {
+					c.AbortWithStatusJSON(404, err("match not found"))
+				} else {
+					c.AbortWithStatusJSON(500, err("could not load match"))
+				}
+				return
 			}
-			return
+			_ = s.cache.Set(c.Request.Context(), cacheKey, m, 30*time.Second)
 		}
 		if !mustMember(s.db, m.GroupID, mustUUID(auth.UserID(c))) {
 			c.AbortWithStatusJSON(403, err("not a group member"))
@@ -226,6 +232,7 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 		c.JSON(500, err(e.Error()))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String())
 	c.JSON(200, gin.H{"success": true, "data": m})
 }
 
@@ -240,6 +247,7 @@ func (s *Server) DeleteMatch(c *gin.Context) {
 		c.JSON(400, err("only upcoming matches can be deleted"))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String(), "squadup:cache:match:"+m.ID.String()+":events")
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var teams []models.Team
 		if errVal := tx.Where("match_id = ?", m.ID).Find(&teams).Error; errVal != nil {
@@ -282,6 +290,13 @@ func (s *Server) GenerateAIPoster(c *gin.Context) {
 		c.JSON(403, err("only squad members can generate a match poster"))
 		return
 	}
+
+	token, acquired, _ := s.locker.Acquire(c.Request.Context(), "match:poster:"+mid.String(), 45*time.Second)
+	if !acquired {
+		c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": gin.H{"message": "AI poster generation is already in progress for this match"}})
+		return
+	}
+	defer s.locker.Release(context.Background(), "match:poster:"+mid.String(), token)
 
 	var in struct {
 		APIKey string `json:"apiKey"`
@@ -498,6 +513,7 @@ func (s *Server) StartMatch(c *gin.Context) {
 		c.JSON(400, err(e.Error()))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String())
 	var g models.Group
 	s.db.First(&g, m.GroupID)
 	notifyGroupMembers(s.db, m.GroupID, nil, "MATCH_LIVE", "Match is LIVE! ⚽", fmt.Sprintf("'%s' has kicked off in %s! Follow the live scoreline.", m.Name, g.Name), "MATCH", &m.ID)
@@ -516,6 +532,7 @@ func (s *Server) FinishMatch(c *gin.Context) {
 		c.JSON(400, err(e.Error()))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String())
 	c.JSON(200, gin.H{"success": true, "data": o})
 }
 
@@ -550,6 +567,7 @@ func (s *Server) AddMatchEvent(c *gin.Context) {
 		c.JSON(400, err(e.Error()))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String()+":events")
 	c.JSON(201, gin.H{"success": true, "data": ev})
 }
 
@@ -569,15 +587,23 @@ func (s *Server) DeleteMatchEvent(c *gin.Context) {
 		c.JSON(400, err(e.Error()))
 		return
 	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+mid.String()+":events")
 	c.JSON(200, gin.H{"success": true})
 }
 
 func (s *Server) GetMatchEvents(c *gin.Context) {
+	mid := mustUUID(c.Param("id"))
+	cacheKey := "squadup:cache:match:" + mid.String() + ":events"
 	var es []models.MatchEvent
-	if e := s.db.Where("match_id=?", mustUUID(c.Param("id"))).Order("match_time_seconds ASC,created_at ASC, id ASC").Find(&es).Error; e != nil {
+	if ok, _ := s.cache.Get(c.Request.Context(), cacheKey, &es); ok {
+		c.JSON(200, gin.H{"success": true, "data": es})
+		return
+	}
+	if e := s.db.Where("match_id=?", mid).Order("match_time_seconds ASC,created_at ASC, id ASC").Find(&es).Error; e != nil {
 		c.JSON(500, err("could not load events"))
 		return
 	}
+	_ = s.cache.Set(c.Request.Context(), cacheKey, es, 30*time.Second)
 	c.JSON(200, gin.H{"success": true, "data": es})
 }
 
@@ -593,6 +619,18 @@ func (s *Server) GetMatchResult(c *gin.Context) {
 
 func (s *Server) FinalizeMatch(c *gin.Context) {
 	mid := mustUUID(c.Param("id"))
+
+	token, acquired, lockErr := s.locker.Acquire(c.Request.Context(), "match:finalize:"+mid.String(), 15*time.Second)
+	if lockErr != nil {
+		c.JSON(500, err("failed to acquire match lock"))
+		return
+	}
+	if !acquired {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "error": gin.H{"message": "match finalization is already in progress"}})
+		return
+	}
+	defer s.locker.Release(context.Background(), "match:finalize:"+mid.String(), token)
+
 	var m models.Match
 	if e := s.db.First(&m, mid).Error; e != nil {
 		c.JSON(404, err("match not found"))
@@ -617,9 +655,17 @@ func (s *Server) FinalizeMatch(c *gin.Context) {
 		c.JSON(400, err(e.Error()))
 		return
 	}
+
+	// Invalidate match cache, events cache, and squad leaderboard cache
+	_ = s.cache.Delete(
+		c.Request.Context(),
+		"squadup:cache:match:"+mid.String(),
+		"squadup:cache:match:"+mid.String()+":events",
+		"squadup:cache:leaderboard:"+m.GroupID.String(),
+	)
+
 	var g models.Group
 	s.db.First(&g, m.GroupID)
 	notifyGroupMembers(s.db, m.GroupID, nil, "MATCH_FINALIZED", "Match Result Finalized 🏆", fmt.Sprintf("Final score recorded for '%s': %d - %d in %s. Check MVP & squad stats!", m.Name, in.HomeScore, in.AwayScore, g.Name), "MATCH", &mid)
 	c.JSON(200, gin.H{"success": true, "data": r0})
 }
-

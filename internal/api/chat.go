@@ -157,6 +157,13 @@ func (s *Server) SendTypingStatus(c *gin.Context) {
 	}
 	var user models.User
 	s.db.Select("id, name").First(&user, uid)
+
+	if in.IsTyping {
+		_ = s.cache.Set(c.Request.Context(), "squadup:typing:"+gid.String()+":"+uid.String(), user.Name, 4*time.Second)
+	} else {
+		_ = s.cache.Delete(c.Request.Context(), "squadup:typing:"+gid.String()+":"+uid.String())
+	}
+
 	s.hub.Broadcast(gid.String(), ws.Event{
 		Type: "USER_TYPING",
 		Data: gin.H{

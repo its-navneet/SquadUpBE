@@ -9,6 +9,7 @@ import (
 	"squadup/backend/internal/match"
 	"squadup/backend/internal/push"
 	"squadup/backend/internal/rating"
+	"squadup/backend/internal/redisx"
 	"squadup/backend/internal/storage"
 	"squadup/backend/internal/ws"
 
@@ -30,6 +31,10 @@ type Server struct {
 	presence      *ws.PresenceTracker
 	apiLimiter    *limiter.Limiter
 	authLimiter   *limiter.Limiter
+	redisClient   *redisx.Client
+	locker        *redisx.Locker
+	cache         *redisx.Cache
+	queue         *redisx.Queue
 }
 
 func NewServer(
@@ -61,6 +66,23 @@ func NewServer(
 		presence:      presence,
 		apiLimiter:    apiLimiter,
 		authLimiter:   authLimiter,
+		locker:        redisx.NewLocker(nil),
+		cache:         redisx.NewCache(nil),
+		queue:         redisx.NewQueue(nil),
+	}
+}
+
+// SetRedis configures the Redis client and components on the Server.
+func (s *Server) SetRedis(rc *redisx.Client, locker *redisx.Locker, cache *redisx.Cache, queue *redisx.Queue) {
+	s.redisClient = rc
+	if locker != nil {
+		s.locker = locker
+	}
+	if cache != nil {
+		s.cache = cache
+	}
+	if queue != nil {
+		s.queue = queue
 	}
 }
 

@@ -26,6 +26,11 @@ type Config struct {
 	FirebaseProjectID       string
 	FirebaseCredentialsPath string
 	FirebaseCredentialsJSON string
+	RedisURL                string
+	RedisAddr               string
+	RedisPassword           string
+	RedisDB                 int
+	RedisEnabled            bool
 }
 
 func parseBool(val string, def bool) bool {
@@ -137,6 +142,15 @@ func Load() Config {
 		FirebaseProjectID:       getEnvFirst("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"),
 		FirebaseCredentialsPath: getEnvFirst("FIREBASE_CREDENTIALS_PATH", "FIREBASE_SERVICE_ACCOUNT_KEY_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
 		FirebaseCredentialsJSON: getEnvFirst("FIREBASE_CREDENTIALS_JSON", "FIREBASE_SERVICE_ACCOUNT_JSON"),
+		RedisURL:                getEnvFirst("REDIS_URL"),
+		RedisAddr:               getEnvFirst("REDIS_ADDR", "REDIS_HOST"),
+		RedisPassword:           os.Getenv("REDIS_PASSWORD"),
+		RedisDB:                 parseInt(os.Getenv("REDIS_DB"), 0),
+		RedisEnabled:            parseBool(os.Getenv("REDIS_ENABLED"), true),
+	}
+	if c.RedisURL == "" && c.RedisAddr == "" {
+		// If neither REDIS_URL nor REDIS_ADDR is configured, Redis is disabled by default
+		c.RedisEnabled = false
 	}
 	if c.FirebaseProjectID == "" {
 		c.FirebaseProjectID = "squadup-32af8"

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -18,6 +19,10 @@ func (s *Server) MarkAttendance(c *gin.Context) {
 		return
 	}
 	mid := m.ID
+	token, acquired, _ := s.locker.Acquire(c.Request.Context(), "attendance:"+mid.String(), 5*time.Second)
+	if acquired {
+		defer s.locker.Release(context.Background(), "attendance:"+mid.String(), token)
+	}
 	uid := mustUUID(auth.UserID(c))
 	var in struct {
 		Status string `json:"status"`
@@ -108,4 +113,3 @@ func (s *Server) GetAttendance(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"success": true, "data": out, "users": users})
 }
-

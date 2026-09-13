@@ -17,6 +17,7 @@ import (
 	"squadup/backend/internal/models"
 	"squadup/backend/internal/push"
 	"squadup/backend/internal/rating"
+	"squadup/backend/internal/redisx"
 	"squadup/backend/internal/storage"
 	"squadup/backend/internal/ws"
 
@@ -31,6 +32,15 @@ func main() {
 	}
 	database.Seed(db)
 
+	rClient := redisx.New(&cfg)
+	defer rClient.Close()
+
+	locker := redisx.NewLocker(rClient)
+	cache := redisx.NewCache(rClient)
+	queue := redisx.NewQueue(rClient)
+	queue.Start(context.Background(), 2)
+	defer queue.Stop()
+
 	go func() {
 		var groupIDs []uuid.UUID
 		db.Model(&models.Match{}).Where("finalized_at IS NOT NULL").Distinct("group_id").Pluck("group_id", &groupIDs)
@@ -40,8 +50,8 @@ func main() {
 	}()
 
 	as := auth.New(cfg.JWTSecret)
-	hub := ws.New()
-	presence := ws.NewPresenceTracker()
+	hub := ws.NewWithRedis(rClient)
+	presence := ws.NewPresenceTrackerWithRedis(rClient)
 	gs := group.New(db)
 	rs := rating.New(db)
 	ms := match.New(db, hub)
@@ -84,11 +94,11 @@ func main() {
 	var apiLimiter *limiter.Limiter
 	var authLimiter *limiter.Limiter
 	if cfg.RateLimitEnabled {
-		apiLimiter = limiter.New(cfg.RateLimitRPS, cfg.RateLimitBurst, 5*time.Minute, 15*time.Minute)
+		apiLimiter = limiter.NewDistributed(cfg.RateLimitRPS, cfg.RateLimitBurst, 5*time.Minute, 15*time.Minute, rClient)
 		defer apiLimiter.Stop()
 
 		authRatePerSec := float64(cfg.AuthRateLimitRPM) / 60.0
-		authLimiter = limiter.New(authRatePerSec, cfg.AuthRateLimitBurst, 5*time.Minute, 15*time.Minute)
+		authLimiter = limiter.NewDistributed(authRatePerSec, cfg.AuthRateLimitBurst, 5*time.Minute, 15*time.Minute, rClient)
 		defer authLimiter.Stop()
 	}
 
@@ -107,6 +117,7 @@ func main() {
 		apiLimiter,
 		authLimiter,
 	)
+	srv.SetRedis(rClient, locker, cache, queue)
 
 	r := srv.SetupRouter()
 
