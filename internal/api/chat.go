@@ -254,7 +254,10 @@ func (s *Server) GetSeenStatus(c *gin.Context) {
 
 func (s *Server) SendChatMessage(c *gin.Context) {
 	gid := mustUUID(c.Param("id"))
-	var in struct{ Content string }
+	var in struct {
+		Content          string     `json:"content"`
+		ReplyToMessageID *uuid.UUID `json:"reply_to_message_id"`
+	}
 	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Content) == "" {
 		c.JSON(400, err("message cannot be empty"))
 		return
@@ -268,7 +271,13 @@ func (s *Server) SendChatMessage(c *gin.Context) {
 		c.JSON(403, err("not a group member"))
 		return
 	}
-	m := models.ChatMessage{GroupID: gid, SenderID: uid, MessageType: "TEXT", Content: in.Content}
+	m := models.ChatMessage{
+		GroupID:          gid,
+		SenderID:         uid,
+		MessageType:      "TEXT",
+		Content:          in.Content,
+		ReplyToMessageID: in.ReplyToMessageID,
+	}
 	if e := s.db.Create(&m).Error; e != nil {
 		c.JSON(500, err(e.Error()))
 		return
@@ -350,4 +359,3 @@ func (s *Server) SendChatMessage(c *gin.Context) {
 
 	c.JSON(201, gin.H{"success": true, "data": m})
 }
-
