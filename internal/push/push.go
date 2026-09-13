@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -51,11 +52,20 @@ func New(db *gorm.DB, projectID, credsPath, credsJSON string) *Service {
 	if strings.TrimSpace(credsJSON) != "" {
 		raw = []byte(credsJSON)
 	} else if strings.TrimSpace(credsPath) != "" {
-		data, err := os.ReadFile(credsPath)
-		if err == nil {
-			raw = data
-		} else {
-			log.Printf("[Push] Failed to read Firebase credentials file at %s: %v", credsPath, err)
+		candidates := []string{
+			credsPath,
+			filepath.Join("SquadUpBE", credsPath),
+			filepath.Join("..", credsPath),
+			filepath.Clean(credsPath),
+		}
+		for _, c := range candidates {
+			if data, err := os.ReadFile(c); err == nil && len(data) > 0 {
+				raw = data
+				break
+			}
+		}
+		if len(raw) == 0 {
+			log.Printf("[Push] Failed to read Firebase credentials file at %s: file not found in search paths", credsPath)
 		}
 	}
 
@@ -204,21 +214,25 @@ func (s *Service) SendPush(userIDs []uuid.UUID, title, body string, data map[str
 		fcmURL := fmt.Sprintf("https://fcm.googleapis.com/v1/projects/%s/messages:send", s.projectID)
 
 		for _, t := range tokens {
-			reqBody := map[string]any{
-				"message": map[string]any{
-					"token": t.Token,
+			msg := map[string]any{
+				"token": t.Token,
+				"notification": map[string]string{
+					"title": title,
+					"body":  body,
+				},
+				"android": map[string]any{
+					"priority": "HIGH",
 					"notification": map[string]string{
-						"title": title,
-						"body":  body,
-					},
-					"data": data,
-					"android": map[string]any{
-						"priority": "HIGH",
-						"notification": map[string]string{
-							"channel_id": "squadup_alerts",
-						},
+						"channel_id": "squadup_alerts",
 					},
 				},
+			}
+			if len(data) > 0 {
+				msg["data"] = data
+			}
+
+			reqBody := map[string]any{
+				"message": msg,
 			}
 
 			payloadBytes, _ := json.Marshal(reqBody)
@@ -240,6 +254,11 @@ func (s *Service) SendPush(userIDs []uuid.UUID, title, body string, data map[str
 			resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK {
+				prefix := t.Token
+				if len(prefix) > 10 {
+					prefix = prefix[:10]
+				}
+				log.Printf("[Push] Successfully delivered FCM push to user %s (token: %s...)", t.UserID, prefix)
 				continue
 			}
 
@@ -248,6 +267,8 @@ func (s *Service) SendPush(userIDs []uuid.UUID, title, body string, data map[str
 			if resp.StatusCode == http.StatusNotFound || strings.Contains(respStr, "UNREGISTERED") || strings.Contains(respStr, "NOT_FOUND") {
 				log.Printf("[Push] Deleting stale token for user %s", t.UserID)
 				s.db.Where("token = ?", t.Token).Delete(&models.DeviceToken{})
+			} else if resp.StatusCode == http.StatusForbidden || strings.Contains(respStr, "PERMISSION_DENIED") {
+				log.Printf("[Push] ❌ PERMISSION DENIED: Firebase Cloud Messaging API (V1) is disabled in Google Cloud for project %s. Enable it here: https://console.cloud.google.com/apis/library/firebasecloudmessaging.googleapis.com?project=%s", s.projectID, s.projectID)
 			} else {
 				log.Printf("[Push] FCM send error (status %d): %s", resp.StatusCode, respStr)
 			}
