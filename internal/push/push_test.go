@@ -113,3 +113,21 @@ func TestLoadLiveServiceAccount(t *testing.T) {
 		t.Logf("Successfully fetched Google OAuth2 Bearer token from Google!")
 	}
 }
+
+func TestLoadServiceAccountFromRawJSON(t *testing.T) {
+	keyPath := "../../squadup-32af8-firebase-adminsdk-fbsvc-a106e59d41.json"
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Skip("Live service account file not found, skipping raw JSON test")
+	}
+
+	rawJSON := string(data)
+	svc := New(nil, "squadup-32af8", "", rawJSON)
+	if svc.privateKey == nil {
+		t.Fatalf("expected private key to be parsed from raw JSON, got nil")
+	}
+	if svc.clientEmail != "firebase-adminsdk-fbsvc@squadup-32af8.iam.gserviceaccount.com" {
+		t.Fatalf("unexpected client email: %s", svc.clientEmail)
+	}
+	t.Logf("Successfully initialized from raw JSON string!")
+}

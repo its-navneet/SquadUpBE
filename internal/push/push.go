@@ -71,7 +71,12 @@ func New(db *gorm.DB, projectID, credsPath, credsJSON string) *Service {
 
 	if len(raw) > 0 {
 		var sa serviceAccountJSON
-		if err := json.Unmarshal(raw, &sa); err == nil && sa.PrivateKey != "" && sa.ClientEmail != "" {
+		if err := json.Unmarshal(raw, &sa); err != nil {
+			log.Printf("[Push] Failed to unmarshal service account JSON: %v", err)
+		} else if sa.PrivateKey == "" || sa.ClientEmail == "" {
+			log.Printf("[Push] Service account JSON missing private_key or client_email (client_email: %q, key_len: %d)", sa.ClientEmail, len(sa.PrivateKey))
+		} else {
+			sa.PrivateKey = strings.ReplaceAll(sa.PrivateKey, "\\n", "\n")
 			pk, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(sa.PrivateKey))
 			if err == nil {
 				s.clientEmail = sa.ClientEmail
@@ -84,8 +89,6 @@ func New(db *gorm.DB, projectID, credsPath, credsJSON string) *Service {
 			} else {
 				log.Printf("[Push] Failed to parse private key: %v", err)
 			}
-		} else {
-			log.Printf("[Push] Failed to unmarshal service account JSON: %v", err)
 		}
 	}
 
