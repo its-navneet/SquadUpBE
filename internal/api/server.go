@@ -127,6 +127,9 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.DELETE("/groups/:id/members/:userId", s.RemoveMember)
 	sec.GET("/groups/:id/join-requests", s.ListJoinRequests)
 	sec.POST("/groups/join", s.JoinGroup)
+	sec.GET("/groups/join-requests/my", s.GetMyJoinRequests)
+	sec.GET("/groups/join-requests/:requestId/status", s.GetJoinRequestStatus)
+	sec.DELETE("/groups/join-requests/:requestId", s.CancelJoinRequest)
 	sec.POST("/groups/:id/join-requests/:requestId/approve", s.ApproveJoinRequest)
 	sec.POST("/groups/:id/join-requests/:requestId/reject", s.RejectJoinRequest)
 

@@ -237,3 +237,31 @@ func TestUserDateOfBirthDynamicAgeSerialization(t *testing.T) {
 		t.Errorf("expected age 22 dynamically calculated in JSON, got %v", m["age"])
 	}
 }
+
+func TestGroupJoinRequestJSONSerialization(t *testing.T) {
+	reqID := "550e8400-e29b-41d4-a716-446655440000"
+	groupID := "550e8400-e29b-41d4-a716-446655440001"
+	userID := "550e8400-e29b-41d4-a716-446655440002"
+
+	raw := `{
+		"id": "` + reqID + `",
+		"group_id": "` + groupID + `",
+		"user_id": "` + userID + `",
+		"status": "PENDING"
+	}`
+
+	var r models.GroupJoinRequest
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if r.Status != "PENDING" {
+		t.Errorf("expected PENDING, got %s", r.Status)
+	}
+	if r.GroupID.String() != groupID {
+		t.Errorf("expected %s, got %s", groupID, r.GroupID.String())
+	}
+	if r.UserID.String() != userID {
+		t.Errorf("expected %s, got %s", userID, r.UserID.String())
+	}
+}

@@ -431,10 +431,128 @@ func (s *Server) JoinGroup(c *gin.Context) {
 		return
 	}
 
+	var g models.Group
+	s.db.First(&g, r.GroupID)
+
 	c.JSON(201, gin.H{
 		"success": true,
-		"data":    r,
+		"data": gin.H{
+			"id":             r.ID,
+			"group_id":       r.GroupID,
+			"user_id":        r.UserID,
+			"status":         r.Status,
+			"created_at":     r.CreatedAt,
+			"group_name":     g.Name,
+			"group_logo_url": g.LogoURL,
+			"group_city":     g.City,
+		},
 	})
+}
+
+func (s *Server) GetMyJoinRequests(c *gin.Context) {
+	uid := mustUUID(auth.UserID(c))
+	var requests []models.GroupJoinRequest
+	s.db.Where("user_id=? AND status='PENDING'", uid).Order("created_at DESC").Find(&requests)
+
+	type JoinRequestWithGroup struct {
+		ID           uuid.UUID `json:"id"`
+		GroupID      uuid.UUID `json:"group_id"`
+		UserID       uuid.UUID `json:"user_id"`
+		Status       string    `json:"status"`
+		CreatedAt    time.Time `json:"created_at"`
+		GroupName    string    `json:"group_name"`
+		GroupLogoURL string    `json:"group_logo_url"`
+		GroupCity    string    `json:"group_city"`
+	}
+
+	result := make([]JoinRequestWithGroup, 0, len(requests))
+	for _, req := range requests {
+		status := req.Status
+		var count int64
+		s.db.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", req.GroupID, uid).Count(&count)
+		if count > 0 {
+			status = "APPROVED"
+		}
+
+		var g models.Group
+		s.db.First(&g, req.GroupID)
+		result = append(result, JoinRequestWithGroup{
+			ID:           req.ID,
+			GroupID:      req.GroupID,
+			UserID:       req.UserID,
+			Status:       status,
+			CreatedAt:    req.CreatedAt,
+			GroupName:    g.Name,
+			GroupLogoURL: g.LogoURL,
+			GroupCity:    g.City,
+		})
+	}
+
+	c.JSON(200, gin.H{"success": true, "data": result})
+}
+
+func (s *Server) GetJoinRequestStatus(c *gin.Context) {
+	rid := mustUUID(c.Param("requestId"))
+	uid := mustUUID(auth.UserID(c))
+
+	var req models.GroupJoinRequest
+	if e := s.db.First(&req, rid).Error; e != nil {
+		c.JSON(404, err("join request not found"))
+		return
+	}
+	if req.UserID != uid {
+		c.JSON(403, err("forbidden"))
+		return
+	}
+
+	status := req.Status
+	var count int64
+	s.db.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", req.GroupID, uid).Count(&count)
+	if count > 0 {
+		status = "APPROVED"
+	}
+
+	var g models.Group
+	s.db.First(&g, req.GroupID)
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data": gin.H{
+			"id":             req.ID,
+			"group_id":       req.GroupID,
+			"user_id":        req.UserID,
+			"status":         status,
+			"created_at":     req.CreatedAt,
+			"group_name":     g.Name,
+			"group_logo_url": g.LogoURL,
+			"group_city":     g.City,
+		},
+	})
+}
+
+func (s *Server) CancelJoinRequest(c *gin.Context) {
+	rid := mustUUID(c.Param("requestId"))
+	uid := mustUUID(auth.UserID(c))
+
+	var req models.GroupJoinRequest
+	if e := s.db.First(&req, rid).Error; e != nil {
+		c.JSON(404, err("join request not found"))
+		return
+	}
+	if req.UserID != uid {
+		c.JSON(403, err("forbidden"))
+		return
+	}
+	if req.Status != "PENDING" {
+		c.JSON(400, err("only pending requests can be cancelled"))
+		return
+	}
+
+	if e := s.db.Delete(&req).Error; e != nil {
+		c.JSON(500, err(e.Error()))
+		return
+	}
+	c.JSON(200, gin.H{"success": true})
 }
 
 func (s *Server) ApproveJoinRequest(c *gin.Context) {
@@ -475,4 +593,3 @@ func (s *Server) RejectJoinRequest(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"success": true, "data": r})
 }
-
