@@ -2051,32 +2051,26 @@ func main() {
 			"data":    out,
 		})
 	})
-	sec.GET("/matches/:id/teams", func(c *gin.Context) {
-		mid := mustUUID(c.Param("id"))
+	loadMatchTeams := func(d *gorm.DB, matchID uuid.UUID) ([]gin.H, error) {
 		var ts []models.Team
-		if e := db.Where("match_id=?", mid).Order("created_at ASC, id ASC").Find(&ts).Error; e != nil {
-			c.JSON(500, err("could not load teams"))
-			return
+		if e := d.Where("match_id=?", matchID).Order("created_at ASC, id ASC").Find(&ts).Error; e != nil {
+			return nil, e
 		}
 		type memberOut struct {
 			models.TeamMember
 			User *models.User `json:"user,omitempty"`
 		}
-		type teamOut struct {
-			models.Team
-			Members []memberOut `json:"members"`
-		}
-		out := make([]teamOut, 0, len(ts))
+		out := make([]gin.H, 0, len(ts))
 		for _, t := range ts {
 			var mem []models.TeamMember
-			db.Where("team_id=?", t.ID).Find(&mem)
+			d.Where("team_id=?", t.ID).Find(&mem)
 			uids := make([]uuid.UUID, 0, len(mem))
 			for _, m := range mem {
 				uids = append(uids, m.UserID)
 			}
 			var users []models.User
 			if len(uids) > 0 {
-				db.Where("id IN ?", uids).Find(&users)
+				d.Where("id IN ?", uids).Find(&users)
 			}
 			uMap := make(map[uuid.UUID]models.User, len(users))
 			for _, u := range users {
@@ -2091,9 +2085,237 @@ func main() {
 				}
 				mList = append(mList, memberOut{m, uPtr})
 			}
-			out = append(out, teamOut{t, mList})
+			out = append(out, gin.H{
+				"id":         t.ID,
+				"match_id":   t.MatchID,
+				"name":       t.Name,
+				"code":       t.Code,
+				"strength":   t.Strength,
+				"created_at": t.CreatedAt,
+				"updated_at": t.UpdatedAt,
+				"members":    mList,
+			})
+		}
+		return out, nil
+	}
+
+	recalcTeamStrength := func(tx *gorm.DB, teamID, groupID uuid.UUID) error {
+		var members []models.TeamMember
+		if err := tx.Where("team_id = ?", teamID).Find(&members).Error; err != nil {
+			return err
+		}
+		if len(members) == 0 {
+			return tx.Model(&models.Team{}).Where("id = ?", teamID).Update("strength", 0.0).Error
+		}
+		var totalRating float64
+		for _, m := range members {
+			r, _, _ := rs.Average(groupID, m.UserID)
+			if r == 0 {
+				r = 5.0
+			}
+			totalRating += r
+		}
+		strength := totalRating / float64(len(members))
+		return tx.Model(&models.Team{}).Where("id = ?", teamID).Update("strength", strength).Error
+	}
+
+	sec.GET("/matches/:id/teams", func(c *gin.Context) {
+		mid := mustUUID(c.Param("id"))
+		out, errLoad := loadMatchTeams(db, mid)
+		if errLoad != nil {
+			c.JSON(500, err("could not load teams"))
+			return
 		}
 		c.JSON(200, gin.H{"success": true, "data": out})
+	})
+
+	sec.POST("/matches/:id/teams/move-player", func(c *gin.Context) {
+		mid := mustUUID(c.Param("id"))
+		var m models.Match
+		if e := db.First(&m, mid).Error; e != nil {
+			c.JSON(404, err("match not found"))
+			return
+		}
+		if !mustAdmin(db, m.GroupID, mustUUID(auth.UserID(c))) {
+			c.JSON(403, err("admin only"))
+			return
+		}
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("teams can only be adjusted for upcoming matches"))
+			return
+		}
+
+		var in struct {
+			UserID       string `json:"user_id"`
+			TargetTeamID string `json:"target_team_id"`
+		}
+		if e := c.ShouldBindJSON(&in); e != nil {
+			c.JSON(400, err("invalid request body"))
+			return
+		}
+		playerUID, errP := uuid.Parse(in.UserID)
+		targetTeamUID, errT := uuid.Parse(in.TargetTeamID)
+		if errP != nil || errT != nil {
+			c.JSON(400, err("valid user_id and target_team_id required"))
+			return
+		}
+
+		var targetTeam models.Team
+		if e := db.Where("id = ? AND match_id = ?", targetTeamUID, mid).First(&targetTeam).Error; e != nil {
+			c.JSON(404, err("target team not found for this match"))
+			return
+		}
+
+		var currentMember models.TeamMember
+		if e := db.Joins("JOIN teams ON teams.id = team_members.team_id").
+			Where("teams.match_id = ? AND team_members.user_id = ?", mid, playerUID).
+			First(&currentMember).Error; e != nil {
+			c.JSON(404, err("player is not assigned to any team in this match"))
+			return
+		}
+
+		if currentMember.TeamID == targetTeamUID {
+			c.JSON(400, err("player is already in this team"))
+			return
+		}
+
+		oldTeamID := currentMember.TeamID
+
+		tx := db.Begin()
+		if tx.Error != nil {
+			c.JSON(500, err(tx.Error.Error()))
+			return
+		}
+
+		if e := tx.Model(&models.TeamMember{}).
+			Where("team_id = ? AND user_id = ?", oldTeamID, playerUID).
+			Update("team_id", targetTeamUID).Error; e != nil {
+			tx.Rollback()
+			c.JSON(500, err("could not move player"))
+			return
+		}
+
+		_ = recalcTeamStrength(tx, oldTeamID, m.GroupID)
+		_ = recalcTeamStrength(tx, targetTeamUID, m.GroupID)
+
+		if e := tx.Commit().Error; e != nil {
+			c.JSON(500, err(e.Error()))
+			return
+		}
+
+		out, errLoad := loadMatchTeams(db, mid)
+		if errLoad != nil {
+			c.JSON(500, err("could not load updated teams"))
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    out,
+			"message": "Player moved successfully",
+		})
+	})
+
+	sec.POST("/matches/:id/teams/swap-players", func(c *gin.Context) {
+		mid := mustUUID(c.Param("id"))
+		var m models.Match
+		if e := db.First(&m, mid).Error; e != nil {
+			c.JSON(404, err("match not found"))
+			return
+		}
+		if !mustAdmin(db, m.GroupID, mustUUID(auth.UserID(c))) {
+			c.JSON(403, err("admin only"))
+			return
+		}
+		if m.Status != "UPCOMING" {
+			c.JSON(400, err("teams can only be adjusted for upcoming matches"))
+			return
+		}
+
+		var in struct {
+			Player1UserID string `json:"player1_user_id"`
+			Player2UserID string `json:"player2_user_id"`
+		}
+		if e := c.ShouldBindJSON(&in); e != nil {
+			c.JSON(400, err("invalid request body"))
+			return
+		}
+		p1UID, errP1 := uuid.Parse(in.Player1UserID)
+		p2UID, errP2 := uuid.Parse(in.Player2UserID)
+		if errP1 != nil || errP2 != nil {
+			c.JSON(400, err("valid player1_user_id and player2_user_id required"))
+			return
+		}
+		if p1UID == p2UID {
+			c.JSON(400, err("cannot swap a player with themselves"))
+			return
+		}
+
+		var mem1 models.TeamMember
+		if e := db.Joins("JOIN teams ON teams.id = team_members.team_id").
+			Where("teams.match_id = ? AND team_members.user_id = ?", mid, p1UID).
+			First(&mem1).Error; e != nil {
+			c.JSON(404, err("player 1 is not assigned to any team in this match"))
+			return
+		}
+
+		var mem2 models.TeamMember
+		if e := db.Joins("JOIN teams ON teams.id = team_members.team_id").
+			Where("teams.match_id = ? AND team_members.user_id = ?", mid, p2UID).
+			First(&mem2).Error; e != nil {
+			c.JSON(404, err("player 2 is not assigned to any team in this match"))
+			return
+		}
+
+		if mem1.TeamID == mem2.TeamID {
+			c.JSON(400, err("both players are already on the same team"))
+			return
+		}
+
+		tx := db.Begin()
+		if tx.Error != nil {
+			c.JSON(500, err(tx.Error.Error()))
+			return
+		}
+
+		team1ID := mem1.TeamID
+		team2ID := mem2.TeamID
+
+		if e := tx.Model(&models.TeamMember{}).
+			Where("team_id = ? AND user_id = ?", team1ID, p1UID).
+			Update("team_id", team2ID).Error; e != nil {
+			tx.Rollback()
+			c.JSON(500, err("failed swapping player 1"))
+			return
+		}
+
+		if e := tx.Model(&models.TeamMember{}).
+			Where("team_id = ? AND user_id = ?", team2ID, p2UID).
+			Update("team_id", team1ID).Error; e != nil {
+			tx.Rollback()
+			c.JSON(500, err("failed swapping player 2"))
+			return
+		}
+
+		_ = recalcTeamStrength(tx, team1ID, m.GroupID)
+		_ = recalcTeamStrength(tx, team2ID, m.GroupID)
+
+		if e := tx.Commit().Error; e != nil {
+			c.JSON(500, err(e.Error()))
+			return
+		}
+
+		out, errLoad := loadMatchTeams(db, mid)
+		if errLoad != nil {
+			c.JSON(500, err("could not load updated teams"))
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    out,
+			"message": "Players swapped successfully",
+		})
 	})
 	sec.POST("/matches/:id/ai-poster", func(c *gin.Context) {
 		mid := mustUUID(c.Param("id"))
