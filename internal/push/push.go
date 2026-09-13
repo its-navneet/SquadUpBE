@@ -197,11 +197,13 @@ func (s *Service) SendPush(userIDs []uuid.UUID, title, body string, data map[str
 	go func() {
 		var tokens []models.DeviceToken
 		if err := s.db.Where("user_id IN (?)", userIDs).Find(&tokens).Error; err != nil || len(tokens) == 0 {
+			log.Printf("[Push] ⚠️ No registered device tokens found in database for user(s) %v. Push skipped. (User must log into mobile app to register device token)", userIDs)
 			return
 		}
 
 		if s.privateKey == nil {
 			log.Printf("[Push Mock] Would send push to %d device(s) for %d user(s) (Title: %q)", len(tokens), len(userIDs), title)
+			log.Printf("[Push Mock] ⚠️ Server running in MOCK mode (no Firebase service account credentials). Would send push to %d device(s) for %d user(s) (Title: %q)", len(tokens), len(userIDs), title)
 			return
 		}
 

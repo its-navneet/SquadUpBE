@@ -62,6 +62,7 @@ func main() {
 	ms := match.New(db, hub)
 	pushService := push.New(db, cfg.FirebaseProjectID, cfg.FirebaseCredentialsPath, cfg.FirebaseCredentialsJSON)
 	models.PushDispatcher = func(userID uuid.UUID, groupID *uuid.UUID, nType, title, message, entityType string, entityID *uuid.UUID) {
+		log.Printf("[PushDispatcher] Triggered for user %s: type=%s, title=%q", userID, nType, title)
 		data := map[string]string{
 			"type":        nType,
 			"entity_type": entityType,
@@ -1350,10 +1351,14 @@ func main() {
 			db.Where("group_id=?", groupID).Find(&members)
 			var group models.Group
 			if db.First(&group, groupID).Error != nil {
+			if err := db.First(&group, groupID).Error; err != nil {
+				log.Printf("[Chat Mention] Failed to find group %s: %v", groupID, err)
 				return
 			}
 			var sender models.User
 			if db.First(&sender, senderUID).Error != nil {
+			if err := db.First(&sender, senderUID).Error; err != nil {
+				log.Printf("[Chat Mention] Failed to find sender %s: %v", senderUID, err)
 				return
 			}
 
@@ -1371,6 +1376,9 @@ func main() {
 			db.Where("id IN ?", targetUserIDs).Find(&targets)
 
 			contentLower := strings.ToLower(content)
+			hasAllMention := strings.Contains(contentLower, "@all") || strings.Contains(contentLower, "@everyone") || strings.Contains(contentLower, "@squad")
+			matchedCount := 0
+
 			for _, target := range targets {
 				targetName := strings.TrimSpace(target.Name)
 				if targetName == "" {
@@ -1382,6 +1390,18 @@ func main() {
 				hasFirstName := len(nameParts) > 0 && strings.Contains(contentLower, "@"+nameParts[0])
 
 				if hasFullName || hasFirstName {
+				emailPrefix := ""
+				if atIdx := strings.Index(target.Email, "@"); atIdx > 0 {
+					emailPrefix = strings.ToLower(target.Email[:atIdx])
+				}
+
+				hasFullName := targetLower != "" && strings.Contains(contentLower, "@"+targetLower)
+				hasFirstName := len(nameParts) > 0 && len(nameParts[0]) >= 2 && strings.Contains(contentLower, "@"+nameParts[0])
+				hasEmailPrefix := emailPrefix != "" && len(emailPrefix) >= 2 && strings.Contains(contentLower, "@"+emailPrefix)
+
+				if hasAllMention || hasFullName || hasFirstName || hasEmailPrefix {
+					matchedCount++
+					log.Printf("[Chat Mention] Matched user %s (%s) in group %s from sender %s", target.ID, target.Name, group.Name, sender.Name)
 					snippet := content
 					if len(snippet) > 80 {
 						snippet = snippet[:77] + "..."
@@ -1397,7 +1417,13 @@ func main() {
 						EntityID:   &groupID,
 					}
 					db.Create(&notif)
+					if err := db.Create(&notif).Error; err != nil {
+						log.Printf("[Chat Mention] Failed to create notification for %s: %v", target.ID, err)
+					}
 				}
+			}
+			if matchedCount == 0 {
+				log.Printf("[Chat Mention] No users matched mention query in message: %q", content)
 			}
 		}(in.Content, uid, gid)
 
