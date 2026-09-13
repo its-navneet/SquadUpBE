@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,9 +31,15 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	expected := `{"status":"ok"}`
-	if w.Body.String() != expected {
-		t.Fatalf("expected body %s, got %s", expected, w.Body.String())
+	var res map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to unmarshal health response: %v", err)
+	}
+	if res["status"] != "ok" {
+		t.Fatalf("expected status 'ok', got %v", res["status"])
+	}
+	if res["redis"] != "in-memory-fallback" {
+		t.Fatalf("expected redis 'in-memory-fallback', got %v", res["redis"])
 	}
 }
 

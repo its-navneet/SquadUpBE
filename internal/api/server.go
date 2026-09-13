@@ -103,7 +103,16 @@ func (s *Server) SetupRouter() *gin.Engine {
 	r := gin.Default()
 	_ = r.SetTrustedProxies(nil)
 	r.Use(cors(s.cfg.CORSOrigins))
-	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.GET("/health", func(c *gin.Context) {
+		redisStatus := "in-memory-fallback"
+		if s.redisClient != nil && s.redisClient.IsAvailable() {
+			redisStatus = "connected"
+		}
+		c.JSON(200, gin.H{
+			"status": "ok",
+			"redis":  redisStatus,
+		})
+	})
 	r.Static("/uploads", "./uploads")
 
 	apiGroup := r.Group("/api")
