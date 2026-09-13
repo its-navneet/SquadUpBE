@@ -10,8 +10,8 @@ type Config struct {
 	DatabaseURL             string
 	JWTSecret               string
 	CORSOrigins             string
-	ImageGenURL             string
-	ImageGenKey             string
+	GeminiAPIKey            string
+	GeminiImageModel        string
 	RateLimitEnabled        bool
 	RateLimitRPS            float64
 	RateLimitBurst          int
@@ -126,8 +126,8 @@ func Load() Config {
 		DatabaseURL:             os.Getenv("DATABASE_URL"),
 		JWTSecret:               os.Getenv("JWT_SECRET"),
 		CORSOrigins:             os.Getenv("CORS_ORIGINS"),
-		ImageGenURL:             os.Getenv("IMAGE_GENERATION_URL"),
-		ImageGenKey:             os.Getenv("IMAGE_GENERATION_API_KEY"),
+		GeminiAPIKey:            getEnvFirst("GEMINI_API_KEY", "FIREBASE_AI_API_KEY", "IMAGE_GENERATION_API_KEY"),
+		GeminiImageModel:        getEnvFirst("GEMINI_IMAGE_MODEL", "imagen-3.0-generate-002"),
 		RateLimitEnabled:        parseBool(os.Getenv("RATE_LIMIT_ENABLED"), true),
 		RateLimitRPS:            parseFloat(os.Getenv("RATE_LIMIT_RPS"), 2.0),
 		RateLimitBurst:          parseInt(os.Getenv("RATE_LIMIT_BURST"), 30),

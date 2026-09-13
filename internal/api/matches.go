@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -26,6 +27,9 @@ func (s *Server) ServePosterImage(c *gin.Context) {
 		return
 	}
 	posterPath := filepath.Join("uploads", "match-posters", fmt.Sprintf("%s.png", mid))
+	if _, err := os.Stat(posterPath); os.IsNotExist(err) {
+		posterPath = filepath.Join("uploads", "posters", fmt.Sprintf("%s.png", mid))
+	}
 	if _, err := os.Stat(posterPath); os.IsNotExist(err) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "poster image not found"})
 		return
@@ -299,21 +303,12 @@ func (s *Server) GenerateAIPoster(c *gin.Context) {
 	defer s.locker.Release(context.Background(), "match:poster:"+mid.String(), token)
 
 	var in struct {
-		APIKey string `json:"apiKey"`
-		Style  string `json:"style"`
+		APIKey      string `json:"apiKey"`
+		Style       string `json:"style"`
+		ImageBase64 string `json:"image_base64"`
+		PosterURL   string `json:"poster_url"`
 	}
 	_ = c.ShouldBindJSON(&in)
-
-	if s.imageClient.BaseURL == "" {
-		s.imageClient.BaseURL = os.Getenv("IMAGE_GENERATION_URL")
-	}
-	if s.imageClient.APIKey == "" {
-		s.imageClient.APIKey = os.Getenv("IMAGE_GENERATION_API_KEY")
-	}
-	if s.imageClient.BaseURL == "" {
-		c.JSON(400, err("IMAGE_GENERATION_URL not configured on backend server. Please set IMAGE_GENERATION_URL in backend/.env"))
-		return
-	}
 
 	var m models.Match
 	if s.db.First(&m, mid).Error != nil {
@@ -321,136 +316,175 @@ func (s *Server) GenerateAIPoster(c *gin.Context) {
 		return
 	}
 
-	var ts []models.Team
-	s.db.Where("match_id=?", mid).Order("created_at ASC, id ASC").Find(&ts)
-	if len(ts) < 2 {
-		c.JSON(400, err("Please divide/generate teams first before creating a team division poster."))
-		return
-	}
+	var imgBytes []byte
+	var prompt string
 
-	type teamLineup struct {
-		Name    string
-		Players []string
-	}
-	var lineups []teamLineup
-	for _, t := range ts {
-		var tMembers []models.TeamMember
-		s.db.Where("team_id = ?", t.ID).Find(&tMembers)
-		var uids []uuid.UUID
-		for _, tm := range tMembers {
-			uids = append(uids, tm.UserID)
+	// Check if client uploaded poster directly (e.g. from Firebase AI Logic)
+	if f, _, errFile := c.Request.FormFile("image"); errFile == nil {
+		defer f.Close()
+		imgBytes, _ = io.ReadAll(io.LimitReader(f, 10*1024*1024))
+	} else if f, _, errFile := c.Request.FormFile("poster"); errFile == nil {
+		defer f.Close()
+		imgBytes, _ = io.ReadAll(io.LimitReader(f, 10*1024*1024))
+	} else if in.ImageBase64 != "" {
+		b64 := in.ImageBase64
+		if idx := strings.Index(b64, ","); idx != -1 {
+			b64 = b64[idx+1:]
 		}
-		var users []models.User
-		if len(uids) > 0 {
-			s.db.Where("id IN ?", uids).Find(&users)
+		var decodeErr error
+		imgBytes, decodeErr = base64.StdEncoding.DecodeString(b64)
+		if decodeErr != nil {
+			c.JSON(400, err("invalid base64 image data"))
+			return
 		}
-		var playerNames []string
-		for _, u := range users {
-			playerNames = append(playerNames, u.Name)
+	}
+
+	// If no pre-generated image bytes provided, generate via server-side Gemini/Google AI
+	if len(imgBytes) == 0 {
+		apiKey := in.APIKey
+		if apiKey == "" && s.imageClient != nil {
+			apiKey = s.imageClient.APIKey
 		}
-		lineups = append(lineups, teamLineup{Name: t.Name, Players: playerNames})
-	}
-
-	var g models.Group
-	s.db.First(&g, m.GroupID)
-
-	var ven models.Venue
-	venueName := "Matchday Turf Arena"
-	if m.VenueID != nil && s.db.First(&ven, *m.VenueID).Error == nil && ven.Name != "" {
-		venueName = ven.Name
-	}
-
-	var sp models.Sport
-	sportLower := "football"
-	if s.db.First(&sp, m.SportID).Error == nil && sp.Name != "" {
-		sportLower = strings.ToLower(sp.Name)
-	}
-
-	var matchTeamBlocks []string
-	for i, line := range lineups {
-		tName := line.Name
-		if strings.TrimSpace(tName) == "" {
-			tName = fmt.Sprintf("Team %d", i+1)
+		if apiKey == "" {
+			apiKey = os.Getenv("GEMINI_API_KEY")
 		}
-		playersStr := strings.Join(line.Players, ", ")
-		if strings.TrimSpace(playersStr) == "" {
-			playersStr = "Squad Players"
+		if apiKey == "" {
+			c.JSON(400, err("GEMINI_API_KEY not configured on backend server. Posters can be generated directly using Firebase AI on the app."))
+			return
 		}
-		matchTeamBlocks = append(matchTeamBlocks, fmt.Sprintf("TEAM %d: %s\nPLAYERS: %s", i+1, tName, playersStr))
-	}
-	if len(matchTeamBlocks) == 0 {
-		matchTeamBlocks = append(matchTeamBlocks, "TEAM 1: Team 1\nPLAYERS: Squad Players", "TEAM 2: Team 2\nPLAYERS: Squad Players")
-	}
-	matchSection := strings.Join(matchTeamBlocks, "\n\nVS\n\n")
 
-	dateStr := "TBD"
-	timeStr := "TBD"
-	if !m.ScheduledAt.IsZero() {
-		dateStr = m.ScheduledAt.Format("02 Jan 2006")
-		timeStr = m.ScheduledAt.Format("03:04 PM")
-	}
+		var ts []models.Team
+		s.db.Where("match_id=?", mid).Order("created_at ASC, id ASC").Find(&ts)
+		if len(ts) < 2 {
+			c.JSON(400, err("Please divide/generate teams first before creating a team division poster."))
+			return
+		}
 
-	teamCount := len(lineups)
-	layoutVs := "* Large centered \"VS\"\n"
-	if teamCount > 2 {
-		layoutVs = fmt.Sprintf("* Multi-team triangular or round-robin division showing all %d teams prominently with VS dividers between them\n", teamCount)
-	}
+		type teamLineup struct {
+			Name    string
+			Players []string
+		}
+		var lineups []teamLineup
+		for _, t := range ts {
+			var tMembers []models.TeamMember
+			s.db.Where("team_id = ?", t.ID).Find(&tMembers)
+			var uids []uuid.UUID
+			for _, tm := range tMembers {
+				uids = append(uids, tm.UserID)
+			}
+			var users []models.User
+			if len(uids) > 0 {
+				s.db.Where("id IN ?", uids).Find(&users)
+			}
+			var playerNames []string
+			for _, u := range users {
+				playerNames = append(playerNames, u.Name)
+			}
+			lineups = append(lineups, teamLineup{Name: t.Name, Players: playerNames})
+		}
 
-	prompt := fmt.Sprintf(
-		"Create a premium modern %s match poster for a casual recreational game.\n\n"+
-			"VISUAL STYLE:\n"+
-			"- Professional %s sports promotional poster\n"+
-			"- Night stadium with dramatic floodlights and subtle fog\n"+
-			"- Dark cinematic background with a %s pitch\n"+
-			"- Bold modern sports typography\n"+
-			"- Clean, minimal, premium graphic design\n"+
-			"- Strong contrast and clear visual hierarchy\n"+
-			"- Vertical 4:5 social-media poster\n\n"+
-			"MATCH INFORMATION:\n"+
-			"%s\n\n"+
-			"DATE: %s\n"+
-			"TIME: %s\n"+
-			"VENUE: %s\n\n"+
-			"LAYOUT:\n"+
-			"- Large 'MATCH DAY' heading at the top\n"+
-			"- Display all %d teams prominently\n"+
-			"- Display the players underneath their respective teams\n"+
-			"%s"+
-			"- Display date, time and venue clearly at the bottom\n"+
-			"- Keep the layout balanced and uncluttered\n"+
-			"- Make all important information readable on a mobile screen\n\n"+
-			"TEXT ACCURACY:\n"+
-			"- Use the provided team names and player names exactly as written\n"+
-			"- Preserve exact spelling, capitalization, numbers and punctuation\n"+
-			"- Do not rewrite, abbreviate or modify any provided text\n"+
-			"- Do not omit any team or player\n"+
-			"- All %d teams must appear in the final poster\n"+
-			"- Treat all provided information as fixed text that must be rendered accurately\n\n"+
-			"DO NOT ADD:\n"+
-			"- No invented players\n"+
-			"- No scores\n"+
-			"- No sponsors\n"+
-			"- No hashtags\n"+
-			"- No extra text\n"+
-			"- No professional club logos or branding\n"+
-			"- No fictional team information\n\n"+
-			"Create a polished, premium recreational sports poster with highly accurate typography and a professional modern composition.",
-		sportLower,
-		sportLower,
-		sportLower,
-		matchSection,
-		dateStr,
-		timeStr,
-		venueName,
-		teamCount,
-		layoutVs,
-		teamCount,
-	)
+		var g models.Group
+		s.db.First(&g, m.GroupID)
 
-	imgBytes, genErr := s.imageClient.Generate(c.Request.Context(), prompt)
-	if genErr != nil {
-		c.JSON(500, err(genErr.Error()))
-		return
+		var ven models.Venue
+		venueName := "Matchday Turf Arena"
+		if m.VenueID != nil && s.db.First(&ven, *m.VenueID).Error == nil && ven.Name != "" {
+			venueName = ven.Name
+		}
+
+		var sp models.Sport
+		sportLower := "football"
+		if s.db.First(&sp, m.SportID).Error == nil && sp.Name != "" {
+			sportLower = strings.ToLower(sp.Name)
+		}
+
+		var matchTeamBlocks []string
+		for i, line := range lineups {
+			tName := line.Name
+			if strings.TrimSpace(tName) == "" {
+				tName = fmt.Sprintf("Team %d", i+1)
+			}
+			playersStr := strings.Join(line.Players, ", ")
+			if strings.TrimSpace(playersStr) == "" {
+				playersStr = "Squad Players"
+			}
+			matchTeamBlocks = append(matchTeamBlocks, fmt.Sprintf("TEAM %d: %s\nPLAYERS: %s", i+1, tName, playersStr))
+		}
+		if len(matchTeamBlocks) == 0 {
+			matchTeamBlocks = append(matchTeamBlocks, "TEAM 1: Team 1\nPLAYERS: Squad Players", "TEAM 2: Team 2\nPLAYERS: Squad Players")
+		}
+		matchSection := strings.Join(matchTeamBlocks, "\n\nVS\n\n")
+
+		dateStr := "TBD"
+		timeStr := "TBD"
+		if !m.ScheduledAt.IsZero() {
+			dateStr = m.ScheduledAt.Format("02 Jan 2006")
+			timeStr = m.ScheduledAt.Format("03:04 PM")
+		}
+
+		teamCount := len(lineups)
+		layoutVs := "* Large centered \"VS\"\n"
+		if teamCount > 2 {
+			layoutVs = fmt.Sprintf("* Multi-team triangular or round-robin division showing all %d teams prominently with VS dividers between them\n", teamCount)
+		}
+
+		prompt = fmt.Sprintf(
+			"Create a premium modern %s match poster for a casual recreational game.\n\n"+
+				"VISUAL STYLE:\n"+
+				"- Professional %s sports promotional poster\n"+
+				"- Night stadium with dramatic floodlights and subtle fog\n"+
+				"- Dark cinematic background with a %s pitch\n"+
+				"- Bold modern sports typography\n"+
+				"- Clean, minimal, premium graphic design\n"+
+				"- Strong contrast and clear visual hierarchy\n"+
+				"- Vertical 4:5 social-media poster\n\n"+
+				"MATCH INFORMATION:\n"+
+				"%s\n\n"+
+				"DATE: %s\n"+
+				"TIME: %s\n"+
+				"VENUE: %s\n\n"+
+				"LAYOUT:\n"+
+				"- Large 'MATCH DAY' heading at the top\n"+
+				"- Display all %d teams prominently\n"+
+				"- Display the players underneath their respective teams\n"+
+				"%s"+
+				"- Display date, time and venue clearly at the bottom\n"+
+				"- Keep the layout balanced and uncluttered\n"+
+				"- Make all important information readable on a mobile screen\n\n"+
+				"TEXT ACCURACY:\n"+
+				"- Use the provided team names and player names exactly as written\n"+
+				"- Preserve exact spelling, capitalization, numbers and punctuation\n"+
+				"- Do not rewrite, abbreviate or modify any provided text\n"+
+				"- Do not omit any team or player\n"+
+				"- All %d teams must appear in the final poster\n"+
+				"- Treat all provided information as fixed text that must be rendered accurately\n\n"+
+				"DO NOT ADD:\n"+
+				"- No invented players\n"+
+				"- No scores\n"+
+				"- No sponsors\n"+
+				"- No hashtags\n"+
+				"- No extra text\n"+
+				"- No professional club logos or branding\n"+
+				"- No fictional team information\n\n"+
+				"Create a polished, premium recreational sports poster with highly accurate typography and a professional modern composition.",
+			sportLower,
+			sportLower,
+			sportLower,
+			matchSection,
+			dateStr,
+			timeStr,
+			venueName,
+			teamCount,
+			layoutVs,
+			teamCount,
+		)
+
+		var genErr error
+		imgBytes, genErr = s.imageClient.Generate(c.Request.Context(), prompt, apiKey)
+		if genErr != nil {
+			c.JSON(500, err(genErr.Error()))
+			return
+		}
 	}
 
 	mimeType := http.DetectContentType(imgBytes)
@@ -463,7 +497,7 @@ func (s *Server) GenerateAIPoster(c *gin.Context) {
 		mimeType = "image/png"
 	}
 
-	// Persist poster image to storage (Amazon S3 or fallback)
+	// Persist poster image to storage (Amazon S3 / B2 or fallback)
 	posterFilename := fmt.Sprintf("posters/%s.png", mid.String())
 	posterURL, uploadErr := s.storage.Upload(c.Request.Context(), posterFilename, imgBytes, "image/png")
 	if uploadErr != nil {
@@ -481,15 +515,19 @@ func (s *Server) GenerateAIPoster(c *gin.Context) {
 		posterURL = fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, posterURL)
 	}
 
-	// Keep local disk copy as fallback for /api/matches/:id/poster-image
-	uploadsDir := filepath.Join("uploads", "posters")
+	// Keep local disk copies as fallback for /api/matches/:id/poster-image
+	uploadsDir := filepath.Join("uploads", "match-posters")
 	_ = os.MkdirAll(uploadsDir, 0755)
 	_ = os.WriteFile(filepath.Join(uploadsDir, fmt.Sprintf("%s.png", mid.String())), imgBytes, 0644)
+	uploadsLegacyDir := filepath.Join("uploads", "posters")
+	_ = os.MkdirAll(uploadsLegacyDir, 0755)
+	_ = os.WriteFile(filepath.Join(uploadsLegacyDir, fmt.Sprintf("%s.png", mid.String())), imgBytes, 0644)
 
 	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgBytes))
 
-	// Persist on match
+	// Persist on match and invalidate cache
 	s.db.Model(&models.Match{}).Where("id = ?", mid).Update("poster_url", posterURL)
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+mid.String())
 
 	c.JSON(200, gin.H{
 		"success": true,

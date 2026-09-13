@@ -73,8 +73,8 @@ func main() {
 	}
 
 	imageClient := client.NewImageClient(
-		cfg.ImageGenURL,
-		cfg.ImageGenKey,
+		cfg.GeminiAPIKey,
+		cfg.GeminiImageModel,
 	)
 	imgStorage := storage.New(cfg)
 
