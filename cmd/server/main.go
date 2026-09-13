@@ -1350,13 +1350,11 @@ func main() {
 			var members []models.GroupMember
 			db.Where("group_id=?", groupID).Find(&members)
 			var group models.Group
-			if db.First(&group, groupID).Error != nil {
 			if err := db.First(&group, groupID).Error; err != nil {
 				log.Printf("[Chat Mention] Failed to find group %s: %v", groupID, err)
 				return
 			}
 			var sender models.User
-			if db.First(&sender, senderUID).Error != nil {
 			if err := db.First(&sender, senderUID).Error; err != nil {
 				log.Printf("[Chat Mention] Failed to find sender %s: %v", senderUID, err)
 				return
@@ -1381,15 +1379,9 @@ func main() {
 
 			for _, target := range targets {
 				targetName := strings.TrimSpace(target.Name)
-				if targetName == "" {
-					continue
-				}
 				targetLower := strings.ToLower(targetName)
-				hasFullName := strings.Contains(contentLower, "@"+targetLower)
 				nameParts := strings.Fields(targetLower)
-				hasFirstName := len(nameParts) > 0 && strings.Contains(contentLower, "@"+nameParts[0])
 
-				if hasFullName || hasFirstName {
 				emailPrefix := ""
 				if atIdx := strings.Index(target.Email, "@"); atIdx > 0 {
 					emailPrefix = strings.ToLower(target.Email[:atIdx])
@@ -1416,7 +1408,6 @@ func main() {
 						EntityType: "GROUP_CHAT",
 						EntityID:   &groupID,
 					}
-					db.Create(&notif)
 					if err := db.Create(&notif).Error; err != nil {
 						log.Printf("[Chat Mention] Failed to create notification for %s: %v", target.ID, err)
 					}
