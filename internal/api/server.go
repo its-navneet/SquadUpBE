@@ -1,0 +1,192 @@
+package api
+
+import (
+	"squadup/backend/internal/auth"
+	"squadup/backend/internal/client"
+	"squadup/backend/internal/config"
+	"squadup/backend/internal/group"
+	"squadup/backend/internal/limiter"
+	"squadup/backend/internal/match"
+	"squadup/backend/internal/push"
+	"squadup/backend/internal/rating"
+	"squadup/backend/internal/storage"
+	"squadup/backend/internal/ws"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+type Server struct {
+	cfg           *config.Config
+	db            *gorm.DB
+	authService   *auth.Service
+	groupService  *group.Service
+	matchService  *match.Service
+	ratingService *rating.Service
+	pushService   *push.Service
+	imageClient   *client.ImageClient
+	storage       storage.Storage
+	hub           *ws.Hub
+	presence      *ws.PresenceTracker
+	apiLimiter    *limiter.Limiter
+	authLimiter   *limiter.Limiter
+}
+
+func NewServer(
+	cfg *config.Config,
+	db *gorm.DB,
+	authService *auth.Service,
+	groupService *group.Service,
+	matchService *match.Service,
+	ratingService *rating.Service,
+	pushService *push.Service,
+	imageClient *client.ImageClient,
+	storage storage.Storage,
+	hub *ws.Hub,
+	presence *ws.PresenceTracker,
+	apiLimiter *limiter.Limiter,
+	authLimiter *limiter.Limiter,
+) *Server {
+	return &Server{
+		cfg:           cfg,
+		db:            db,
+		authService:   authService,
+		groupService:  groupService,
+		matchService:  matchService,
+		ratingService: ratingService,
+		pushService:   pushService,
+		imageClient:   imageClient,
+		storage:       storage,
+		hub:           hub,
+		presence:      presence,
+		apiLimiter:    apiLimiter,
+		authLimiter:   authLimiter,
+	}
+}
+
+func cors(origin string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		if c.Request.Method == "OPTIONS" {
+			c.Status(204)
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) SetupRouter() *gin.Engine {
+	r := gin.Default()
+	_ = r.SetTrustedProxies(nil)
+	r.Use(cors(s.cfg.CORSOrigins))
+	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.Static("/uploads", "./uploads")
+
+	apiGroup := r.Group("/api")
+	if s.apiLimiter != nil {
+		apiGroup.Use(s.apiLimiter.Middleware(limiter.UserOrIPKeyExtractor))
+	}
+
+	var authLimitMiddleware gin.HandlerFunc
+	if s.authLimiter != nil {
+		authLimitMiddleware = s.authLimiter.Middleware(limiter.IPKeyExtractor)
+	} else {
+		authLimitMiddleware = func(c *gin.Context) { c.Next() }
+	}
+
+	// Public routes
+	apiGroup.GET("/matches/:id/poster-image", s.ServePosterImage)
+	apiGroup.POST("/upload/image", authLimitMiddleware, s.UploadImage)
+	apiGroup.POST("/auth/register", authLimitMiddleware, s.Register)
+	apiGroup.POST("/auth/login", authLimitMiddleware, s.Login)
+
+	// Authenticated routes
+	sec := apiGroup.Group("")
+	sec.Use(s.authService.Middleware())
+
+	// Users
+	sec.GET("/users/me", s.GetMe)
+	sec.GET("/users/:id", s.GetUser)
+	sec.PUT("/users/me", s.UpdateMe)
+	sec.POST("/users/device-token", s.RegisterDeviceToken)
+	sec.DELETE("/users/device-token", s.DeleteDeviceToken)
+
+	// Sports
+	sec.GET("/sports", s.ListSports)
+
+	// Groups
+	sec.POST("/groups", s.CreateGroup)
+	sec.GET("/groups", s.ListGroups)
+	sec.GET("/groups/:id", s.GetGroup)
+	sec.PATCH("/groups/:id", s.UpdateGroup)
+	sec.GET("/groups/:id/members", s.ListMembers)
+	sec.PUT("/groups/:id/members/:userId/role", s.UpdateMemberRole)
+	sec.POST("/groups/:id/members/:userId/role", s.UpdateMemberRole)
+	sec.DELETE("/groups/:id/members/:userId", s.RemoveMember)
+	sec.GET("/groups/:id/join-requests", s.ListJoinRequests)
+	sec.POST("/groups/join", s.JoinGroup)
+	sec.POST("/groups/:id/join-requests/:requestId/approve", s.ApproveJoinRequest)
+	sec.POST("/groups/:id/join-requests/:requestId/reject", s.RejectJoinRequest)
+
+	// Ratings & Leaderboard
+	sec.GET("/groups/:id/ratings/:userId", s.GetUserRating)
+	sec.POST("/groups/:id/ratings", s.UpsertUserRating)
+
+	// Notifications
+	sec.GET("/notifications", s.ListNotifications)
+	sec.GET("/notifications/unread-count", s.GetUnreadNotificationCount)
+	sec.POST("/notifications/:id/read", s.MarkNotificationRead)
+	sec.POST("/notifications/read-all", s.MarkAllNotificationsRead)
+	sec.DELETE("/notifications/:id", s.DeleteNotification)
+	sec.DELETE("/notifications/clear-all", s.ClearAllNotifications)
+
+	// Chat
+	sec.GET("/groups/:id/chat", s.GetChatMessages)
+	sec.POST("/groups/:id/chat/read", s.MarkChatRead)
+	sec.GET("/groups/:id/chat/unread", s.GetUnreadChatCount)
+	sec.POST("/groups/:id/chat/typing", s.SendTypingStatus)
+	sec.GET("/groups/:id/chat/messages/:message_id/seen", s.GetSeenStatus)
+	sec.GET("/groups/:id/chat/:message_id/seen", s.GetSeenStatus)
+	sec.POST("/groups/:id/chat", s.SendChatMessage)
+
+	// WebSockets & Presence
+	sec.GET("/presence/online", s.GetOnlinePresence)
+	sec.GET("/ws/presence", s.PresenceWS)
+	sec.GET("/ws/groups/:id", s.GroupWS)
+	sec.GET("/ws/matches/:id", s.MatchWS)
+
+	// Venues
+	sec.POST("/groups/:id/venues", s.CreateVenue)
+	sec.GET("/groups/:id/venues", s.ListVenues)
+
+	// Group Matches
+	sec.POST("/groups/:id/matches", s.CreateMatch)
+	sec.GET("/groups/:id/matches", s.ListGroupMatches)
+
+	// Match-scoped operations
+	sec.Use(s.MatchMembershipMiddleware())
+	sec.GET("/matches/:id", s.GetMatch)
+	sec.PUT("/matches/:id", s.UpdateMatch)
+	sec.DELETE("/matches/:id", s.DeleteMatch)
+	sec.POST("/matches/:id/attendance", s.MarkAttendance)
+	sec.GET("/matches/:id/attendance", s.GetAttendance)
+	sec.POST("/matches/:id/generate-teams", s.GenerateTeams)
+	sec.GET("/matches/:id/teams", s.GetMatchTeams)
+	sec.POST("/matches/:id/teams/move-player", s.MovePlayer)
+	sec.POST("/matches/:id/teams/swap-players", s.SwapPlayers)
+	sec.POST("/matches/:id/ai-poster", s.GenerateAIPoster)
+	sec.POST("/matches/:id/start", s.StartMatch)
+	sec.POST("/matches/:id/finish", s.FinishMatch)
+	sec.POST("/matches/:id/events", s.AddMatchEvent)
+	sec.DELETE("/matches/:id/events/:eventId", s.DeleteMatchEvent)
+	sec.GET("/matches/:id/events", s.GetMatchEvents)
+	sec.GET("/matches/:id/result", s.GetMatchResult)
+	sec.POST("/matches/:id/finalize", s.FinalizeMatch)
+
+	// Squad leaderboard
+	sec.GET("/groups/:id/leaderboard", s.GetLeaderboard)
+
+	return r
+}
