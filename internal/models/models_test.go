@@ -265,3 +265,35 @@ func TestGroupJoinRequestJSONSerialization(t *testing.T) {
 		t.Errorf("expected %s, got %s", userID, r.UserID.String())
 	}
 }
+
+func TestPlayerStatisticsAndCareerStatsSavesAndFouls(t *testing.T) {
+	raw := `{
+		"matches": 5,
+		"goals": 2,
+		"clean_sheets": 3,
+		"saves": 14,
+		"fouls": 4
+	}`
+
+	var ps models.PlayerStatistics
+	if err := json.Unmarshal([]byte(raw), &ps); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if ps.Saves != 14 {
+		t.Errorf("expected 14 saves, got %d", ps.Saves)
+	}
+	if ps.Fouls != 4 {
+		t.Errorf("expected 4 fouls, got %d", ps.Fouls)
+	}
+
+	var cs models.CareerStats
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if cs.Saves != 14 {
+		t.Errorf("expected 14 saves, got %d", cs.Saves)
+	}
+	if cs.Fouls != 4 {
+		t.Errorf("expected 4 fouls, got %d", cs.Fouls)
+	}
+}

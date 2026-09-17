@@ -185,10 +185,12 @@ func (s *Server) ListMembers(c *gin.Context) {
 			Assists     int       `gorm:"column:assists"`
 			MVP         int       `gorm:"column:mvp"`
 			CleanSheets int       `gorm:"column:clean_sheets"`
+			Saves       int       `gorm:"column:saves"`
+			Fouls       int       `gorm:"column:fouls"`
 		}
 		var aggs []UserCareerAgg
 		s.db.Table("player_statistics").
-			Select("user_id, SUM(matches) as matches, SUM(wins) as wins, SUM(draws) as draws, SUM(losses) as losses, SUM(goals) as goals, SUM(assists) as assists, SUM(mvp) as mvp, SUM(clean_sheets) as clean_sheets").
+			Select("user_id, SUM(matches) as matches, SUM(wins) as wins, SUM(draws) as draws, SUM(losses) as losses, SUM(goals) as goals, SUM(assists) as assists, SUM(mvp) as mvp, SUM(clean_sheets) as clean_sheets, SUM(saves) as saves, SUM(fouls) as fouls").
 			Where("user_id IN ?", ids).
 			Group("user_id").
 			Scan(&aggs)
@@ -211,6 +213,8 @@ func (s *Server) ListMembers(c *gin.Context) {
 					Assists:     a.Assists,
 					MVP:         a.MVP,
 					CleanSheets: a.CleanSheets,
+					Saves:       a.Saves,
+					Fouls:       a.Fouls,
 					WinRate:     winRate,
 				}
 			} else {

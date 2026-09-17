@@ -120,6 +120,9 @@ type EventMetadata struct {
 	Note             string     `json:"note,omitempty"`
 	IncomingPlayerID *uuid.UUID `json:"incoming_player_id,omitempty"`
 	CreditedTeamID   *uuid.UUID `json:"credited_team_id,omitempty"`
+	FouledPlayerID   *uuid.UUID `json:"fouled_player_id,omitempty"`
+	FoulType         string     `json:"foul_type,omitempty"`
+	SaveType         string     `json:"save_type,omitempty"`
 }
 
 func validateEvent(tx *gorm.DB, id uuid.UUID, e *models.MatchEvent) error {
@@ -135,7 +138,7 @@ func validateEvent(tx *gorm.DB, id uuid.UUID, e *models.MatchEvent) error {
 		return errors.New("invalid event metadata")
 	}
 	switch e.EventType {
-	case "GOAL", "OWN_GOAL", "YELLOW_CARD", "RED_CARD", "SUBSTITUTION":
+	case "GOAL", "OWN_GOAL", "YELLOW_CARD", "RED_CARD", "SUBSTITUTION", "SAVE", "FOUL":
 		if e.TeamID == nil || e.PlayerID == nil {
 			return errors.New("event requires a team and player")
 		}
@@ -172,6 +175,11 @@ func validateEvent(tx *gorm.DB, id uuid.UUID, e *models.MatchEvent) error {
 	}
 	if e.AssistPlayerID != nil && (e.EventType != "GOAL" || *e.AssistPlayerID == *e.PlayerID) {
 		return errors.New("invalid assist player")
+	}
+	if e.EventType == "FOUL" && meta.FouledPlayerID != nil && e.PlayerID != nil {
+		if *meta.FouledPlayerID == *e.PlayerID {
+			return errors.New("fouling player and fouled player must be distinct")
+		}
 	}
 	if e.EventType == "SUBSTITUTION" {
 		if meta.IncomingPlayerID == nil || *meta.IncomingPlayerID == *e.PlayerID {
@@ -373,6 +381,14 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 			case "RED_CARD":
 				if ev.PlayerID != nil {
 					getStat(*ev.PlayerID).RedCards++
+				}
+			case "SAVE":
+				if ev.PlayerID != nil {
+					getStat(*ev.PlayerID).Saves++
+				}
+			case "FOUL":
+				if ev.PlayerID != nil {
+					getStat(*ev.PlayerID).Fouls++
 				}
 			}
 		}

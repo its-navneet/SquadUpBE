@@ -143,6 +143,8 @@ type CareerStats struct {
 	Assists     int     `json:"assists"`
 	MVP         int     `json:"mvp"`
 	CleanSheets int     `json:"clean_sheets"`
+	Saves       int     `json:"saves"`
+	Fouls       int     `json:"fouls"`
 	WinRate     float64 `json:"win_rate"`
 }
 
@@ -423,6 +425,8 @@ type PlayerStatistics struct {
 	CleanSheets     int       `json:"clean_sheets"`
 	YellowCards     int       `json:"yellow_cards"`
 	RedCards        int       `json:"red_cards"`
+	Saves           int       `json:"saves"`
+	Fouls           int       `json:"fouls"`
 	AttendanceCount int       `json:"attendance_count"`
 	AttendanceTotal int       `json:"attendance_total"`
 }

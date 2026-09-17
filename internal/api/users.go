@@ -31,6 +31,8 @@ func (s *Server) computeCareerStats(u *models.User) *models.CareerStats {
 		cs.Assists += st.Assists
 		cs.MVP += st.MVP
 		cs.CleanSheets += st.CleanSheets
+		cs.Saves += st.Saves
+		cs.Fouls += st.Fouls
 	}
 
 	if cs.Matches > 0 {
@@ -264,4 +266,3 @@ func (s *Server) DeleteDeviceToken(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"success": true, "message": "device token removed"})
 }
-
