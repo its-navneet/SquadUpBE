@@ -94,3 +94,29 @@ func TestDetermineWinnerStaysPairing(t *testing.T) {
 		t.Errorf("expected next pairing Red vs Green, got home: %v away: %v", nextHome, nextAway)
 	}
 }
+
+func TestCalculateTotalMiniMatches(t *testing.T) {
+	tests := []struct {
+		duration     int
+		miniDuration int
+		breakMinutes int
+		expected     int
+	}{
+		{duration: 90, miniDuration: 15, breakMinutes: 5, expected: 4},
+		{duration: 60, miniDuration: 15, breakMinutes: 5, expected: 3},
+		{duration: 120, miniDuration: 15, breakMinutes: 5, expected: 6},
+		{duration: 120, miniDuration: 20, breakMinutes: 5, expected: 5},
+		{duration: 60, miniDuration: 10, breakMinutes: 5, expected: 4},
+		{duration: 90, miniDuration: 10, breakMinutes: 5, expected: 6},
+		{duration: 90, miniDuration: 25, breakMinutes: 5, expected: 3},
+		{duration: 0, miniDuration: 15, breakMinutes: 5, expected: 1},
+	}
+
+	for _, tc := range tests {
+		got := CalculateTotalMiniMatches(tc.duration, tc.miniDuration, tc.breakMinutes)
+		if got != tc.expected {
+			t.Errorf("CalculateTotalMiniMatches(%d, %d, %d) = %d; want %d",
+				tc.duration, tc.miniDuration, tc.breakMinutes, got, tc.expected)
+		}
+	}
+}

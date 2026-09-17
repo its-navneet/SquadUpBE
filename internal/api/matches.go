@@ -61,6 +61,8 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		TournamentType    string `json:"tournament_type"`
 		MiniMatchDuration int    `json:"mini_match_duration"`
 		DrawRule          string `json:"draw_rule"`
+		TotalMiniMatches  int    `json:"total_mini_matches"`
+		BreakMinutes      int    `json:"break_minutes"`
 	}
 	if c.BindJSON(&in) != nil || in.Name == "" {
 		c.JSON(400, err("match name required"))
@@ -80,12 +82,16 @@ func (s *Server) CreateMatch(c *gin.Context) {
 	tournamentType := in.TournamentType
 	miniMatchDuration := in.MiniMatchDuration
 	drawRule := in.DrawRule
+	totalMiniMatches := in.TotalMiniMatches
+	breakMinutes := in.BreakMinutes
 
 	// Strict requirement: 2 teams remain identical to before (pure single match)
 	if actualTeamCount <= 2 {
 		tournamentType = "NONE"
 		miniMatchDuration = 0
 		drawRule = ""
+		totalMiniMatches = 0
+		breakMinutes = 0
 	} else {
 		if tournamentType == "" || tournamentType == "NONE" {
 			tournamentType = "WINNER_STAYS"
@@ -95,6 +101,12 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		}
 		if drawRule == "" {
 			drawRule = "DEFENDER_STAYS"
+		}
+		if breakMinutes <= 0 {
+			breakMinutes = 5
+		}
+		if totalMiniMatches <= 0 {
+			totalMiniMatches = CalculateTotalMiniMatches(in.DurationMinutes, miniMatchDuration, breakMinutes)
 		}
 	}
 
@@ -116,6 +128,8 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		TournamentType:    tournamentType,
 		MiniMatchDuration: miniMatchDuration,
 		DrawRule:          drawRule,
+		TotalMiniMatches:  totalMiniMatches,
+		BreakMinutes:      breakMinutes,
 	}
 	if in.VenueID != "" {
 		id := mustUUID(in.VenueID)
@@ -242,6 +256,8 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 		TournamentType    string `json:"tournament_type"`
 		MiniMatchDuration int    `json:"mini_match_duration"`
 		DrawRule          string `json:"draw_rule"`
+		TotalMiniMatches  int    `json:"total_mini_matches"`
+		BreakMinutes      int    `json:"break_minutes"`
 	}
 	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
 		c.JSON(400, err("match name required"))
@@ -276,6 +292,8 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 		m.TournamentType = "NONE"
 		m.MiniMatchDuration = 0
 		m.DrawRule = ""
+		m.TotalMiniMatches = 0
+		m.BreakMinutes = 0
 	} else {
 		if in.TournamentType != "" {
 			m.TournamentType = in.TournamentType
@@ -285,6 +303,16 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 		}
 		if in.DrawRule != "" {
 			m.DrawRule = in.DrawRule
+		}
+		if in.BreakMinutes > 0 {
+			m.BreakMinutes = in.BreakMinutes
+		} else if m.BreakMinutes <= 0 {
+			m.BreakMinutes = 5
+		}
+		if in.TotalMiniMatches > 0 {
+			m.TotalMiniMatches = in.TotalMiniMatches
+		} else {
+			m.TotalMiniMatches = CalculateTotalMiniMatches(m.DurationMinutes, m.MiniMatchDuration, m.BreakMinutes)
 		}
 	}
 

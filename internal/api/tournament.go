@@ -26,6 +26,27 @@ type TeamStanding struct {
 	Points         int       `json:"points"`
 }
 
+// CalculateTotalMiniMatches determines the planned number of mini-matches
+// taking into account total duration, individual mini-match duration, and the 5-minute inter-match gap.
+func CalculateTotalMiniMatches(durationMinutes, miniMatchDuration, breakMinutes int) int {
+	if miniMatchDuration <= 0 {
+		return 1
+	}
+	if breakMinutes <= 0 {
+		breakMinutes = 5
+	}
+	if durationMinutes <= 0 {
+		return 1
+	}
+	// Total time for N matches with (N-1) breaks of G minutes:
+	// N * M + (N-1) * G <= T  =>  N * (M + G) <= T + G  =>  N = (T + G) / (M + G)
+	total := (durationMinutes + breakMinutes) / (miniMatchDuration + breakMinutes)
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
 // EnsureInitialMiniMatch initializes the first mini-match if teams exist and none have been created yet
 func (s *Server) ensureInitialMiniMatch(matchID uuid.UUID, tournamentType string, teams []models.Team) *models.MiniMatch {
 	if len(teams) < 2 {
@@ -137,20 +158,33 @@ func (s *Server) GetMiniMatches(c *gin.Context) {
 
 	standings := calculateStandings(teams, miniMatches)
 
+	totalMiniMatches := m.TotalMiniMatches
+	if totalMiniMatches <= 0 && m.TeamCount > 2 {
+		totalMiniMatches = CalculateTotalMiniMatches(m.DurationMinutes, m.MiniMatchDuration, m.BreakMinutes)
+	}
+	breakMinutes := m.BreakMinutes
+	if breakMinutes <= 0 && m.TeamCount > 2 {
+		breakMinutes = 5
+	}
+
 	c.JSON(200, gin.H{
-		"success":         true,
-		"tournament_type": m.TournamentType,
-		"mini_matches":    miniMatches,
-		"standings":       standings,
-		"teams":           teams,
+		"success":            true,
+		"tournament_type":    m.TournamentType,
+		"mini_matches":       miniMatches,
+		"standings":          standings,
+		"teams":              teams,
+		"total_mini_matches": totalMiniMatches,
+		"break_minutes":      breakMinutes,
 	})
 }
 
 type RotateMiniMatchInput struct {
-	MiniMatchID  string `json:"mini_match_id"`
-	HomeScore    int    `json:"home_score"`
-	AwayScore    int    `json:"away_score"`
-	WinnerTeamID string `json:"winner_team_id"`
+	MiniMatchID      string `json:"mini_match_id"`
+	HomeScore        int    `json:"home_score"`
+	AwayScore        int    `json:"away_score"`
+	WinnerTeamID     string `json:"winner_team_id"`
+	StartImmediately bool   `json:"start_immediately"`
+	ForceNext        bool   `json:"force_next"`
 }
 
 // RotateMiniMatch ends the current mini-match and sets up the next match in rotation
@@ -240,6 +274,30 @@ func (s *Server) RotateMiniMatch(c *gin.Context) {
 	current.WinnerTeamID = winnerID
 	s.db.Save(&current)
 
+	totalMiniMatches := m.TotalMiniMatches
+	if totalMiniMatches <= 0 {
+		totalMiniMatches = CalculateTotalMiniMatches(m.DurationMinutes, m.MiniMatchDuration, m.BreakMinutes)
+	}
+
+	// If all planned tournament matches are completed and admin hasn't requested an extra game
+	if current.GameNumber >= totalMiniMatches && !in.ForceNext {
+		var miniMatches []models.MiniMatch
+		s.db.Where("match_id = ?", mid).Order("game_number ASC").Find(&miniMatches)
+		standings := calculateStandings(teams, miniMatches)
+
+		c.JSON(200, gin.H{
+			"success":              true,
+			"tournament_completed": true,
+			"message":              "All scheduled tournament matches have been completed!",
+			"tournament_type":      m.TournamentType,
+			"total_mini_matches":   totalMiniMatches,
+			"current":              current,
+			"mini_matches":         miniMatches,
+			"standings":            standings,
+		})
+		return
+	}
+
 	// 3. Determine next pairing
 	var nextHome uuid.UUID
 	var nextAway uuid.UUID
@@ -319,13 +377,17 @@ func (s *Server) RotateMiniMatch(c *gin.Context) {
 		nextHome, nextAway = determineWinnerStaysPairing(teams, current, winnerID)
 	}
 
-	// 4. Create Next MiniMatch
+	// 4. Create Next MiniMatch (status BREAK by default for the 5 min gap, or LIVE if immediate)
+	nextStatus := "BREAK"
+	if in.StartImmediately {
+		nextStatus = "LIVE"
+	}
 	nextMatch := models.MiniMatch{
 		MatchID:    mid,
 		GameNumber: nextGameNum,
 		HomeTeamID: nextHome,
 		AwayTeamID: nextAway,
-		Status:     "LIVE",
+		Status:     nextStatus,
 		StartedAt:  &now,
 	}
 	s.db.Create(&nextMatch)
@@ -335,12 +397,68 @@ func (s *Server) RotateMiniMatch(c *gin.Context) {
 	standings := calculateStandings(teams, miniMatches)
 
 	c.JSON(200, gin.H{
-		"success":         true,
-		"current":         current,
-		"next":            nextMatch,
-		"tournament_type": m.TournamentType,
-		"mini_matches":    miniMatches,
-		"standings":       standings,
+		"success":            true,
+		"current":            current,
+		"next":               nextMatch,
+		"tournament_type":    m.TournamentType,
+		"total_mini_matches": totalMiniMatches,
+		"break_minutes":      m.BreakMinutes,
+		"mini_matches":       miniMatches,
+		"standings":          standings,
+	})
+}
+
+// StartMiniMatch transitions a mini-match from BREAK/UPCOMING to LIVE
+func (s *Server) StartMiniMatch(c *gin.Context) {
+	mid := mustUUID(c.Param("id"))
+	uid := mustUUID(auth.UserID(c))
+
+	var m models.Match
+	if s.db.First(&m, mid).Error != nil {
+		c.JSON(404, err("match not found"))
+		return
+	}
+
+	if !mustAdmin(s.db, m.GroupID, uid) {
+		c.JSON(403, err("only owners or admins can manage match play"))
+		return
+	}
+
+	var in struct {
+		MiniMatchID string `json:"mini_match_id"`
+	}
+	_ = c.BindJSON(&in)
+
+	var target models.MiniMatch
+	if in.MiniMatchID != "" {
+		if s.db.Where("id = ? AND match_id = ?", mustUUID(in.MiniMatchID), mid).First(&target).Error != nil {
+			c.JSON(404, err("mini-match not found"))
+			return
+		}
+	} else {
+		// Find latest uncompleted mini-match
+		if s.db.Where("match_id = ? AND status != 'COMPLETED'", mid).Order("game_number ASC").First(&target).Error != nil {
+			c.JSON(404, err("no active or queued mini-match found"))
+			return
+		}
+	}
+
+	now := time.Now()
+	target.Status = "LIVE"
+	target.StartedAt = &now
+	s.db.Save(&target)
+
+	var miniMatches []models.MiniMatch
+	s.db.Where("match_id = ?", mid).Order("game_number ASC").Find(&miniMatches)
+	var teams []models.Team
+	s.db.Where("match_id = ?", mid).Order("created_at ASC, id ASC").Find(&teams)
+	standings := calculateStandings(teams, miniMatches)
+
+	c.JSON(200, gin.H{
+		"success":      true,
+		"mini_match":   target,
+		"mini_matches": miniMatches,
+		"standings":    standings,
 	})
 }
 

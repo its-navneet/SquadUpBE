@@ -296,6 +296,8 @@ type Match struct {
 	TournamentType    string     `gorm:"default:'NONE'" json:"tournament_type,omitempty"`
 	MiniMatchDuration int        `json:"mini_match_duration,omitempty"`
 	DrawRule          string     `json:"draw_rule,omitempty"`
+	TotalMiniMatches  int        `json:"total_mini_matches,omitempty"`
+	BreakMinutes      int        `gorm:"default:5" json:"break_minutes,omitempty"`
 	PosterURL         string     `json:"poster_url,omitempty"`
 	PosterBucket      string     `json:"poster_bucket,omitempty"`
 	PosterKey         string     `json:"poster_key,omitempty"`
