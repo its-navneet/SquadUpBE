@@ -216,6 +216,8 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.GET("/matches/:id/teams", s.GetMatchTeams)
 	sec.POST("/matches/:id/teams/move-player", s.MovePlayer)
 	sec.POST("/matches/:id/teams/swap-players", s.SwapPlayers)
+	sec.GET("/matches/:id/mini-matches", s.GetMiniMatches)
+	sec.POST("/matches/:id/mini-matches/rotate", s.RotateMiniMatch)
 	sec.POST("/matches/:id/ai-poster", s.GenerateAIPoster)
 	sec.POST("/matches/:id/start", s.StartMatch)
 	sec.POST("/matches/:id/finish", s.FinishMatch)

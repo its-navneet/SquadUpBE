@@ -276,26 +276,29 @@ type Venue struct {
 type Match struct {
 	Base
 
-	GroupID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
-	SportID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"sport_id"`
-	VenueID         *uuid.UUID `gorm:"type:uuid" json:"venue_id,omitempty"`
-	Venue           string     `json:"venue,omitempty"`
-	VenueMapURL     string     `json:"venue_map_url,omitempty"`
-	Name            string     `gorm:"not null" json:"name"`
-	ScheduledAt     time.Time  `gorm:"not null" json:"scheduled_at"`
-	DurationMinutes int        `json:"duration_minutes"`
-	Format          string     `json:"format"`
-	TeamCount       int        `json:"team_count"`
-	PlayersPerTeam  int        `json:"players_per_team"`
-	MaxPlayers      int        `json:"max_players"`
-	Notes           string     `json:"notes,omitempty"`
-	Status          string     `gorm:"default:'UPCOMING'" json:"status"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	EndedAt         *time.Time `json:"ended_at,omitempty"`
-	FinalizedAt     *time.Time `json:"finalized_at,omitempty"`
-	PosterURL       string     `json:"poster_url,omitempty"`
-	PosterBucket    string     `json:"poster_bucket,omitempty"`
-	PosterKey       string     `json:"poster_key,omitempty"`
+	GroupID           uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
+	SportID           uuid.UUID  `gorm:"type:uuid;index;not null" json:"sport_id"`
+	VenueID           *uuid.UUID `gorm:"type:uuid" json:"venue_id,omitempty"`
+	Venue             string     `json:"venue,omitempty"`
+	VenueMapURL       string     `json:"venue_map_url,omitempty"`
+	Name              string     `gorm:"not null" json:"name"`
+	ScheduledAt       time.Time  `gorm:"not null" json:"scheduled_at"`
+	DurationMinutes   int        `json:"duration_minutes"`
+	Format            string     `json:"format"`
+	TeamCount         int        `json:"team_count"`
+	PlayersPerTeam    int        `json:"players_per_team"`
+	MaxPlayers        int        `json:"max_players"`
+	Notes             string     `json:"notes,omitempty"`
+	Status            string     `gorm:"default:'UPCOMING'" json:"status"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	EndedAt           *time.Time `json:"ended_at,omitempty"`
+	FinalizedAt       *time.Time `json:"finalized_at,omitempty"`
+	TournamentType    string     `gorm:"default:'NONE'" json:"tournament_type,omitempty"`
+	MiniMatchDuration int        `json:"mini_match_duration,omitempty"`
+	DrawRule          string     `json:"draw_rule,omitempty"`
+	PosterURL         string     `json:"poster_url,omitempty"`
+	PosterBucket      string     `json:"poster_bucket,omitempty"`
+	PosterKey         string     `json:"poster_key,omitempty"`
 }
 
 func (m Match) MarshalJSON() ([]byte, error) {
@@ -511,4 +514,23 @@ type PollVote struct {
 	PollID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_poll_user" json:"poll_id"`
 	UserID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_poll_user" json:"user_id"`
 	Option string    `gorm:"not null" json:"option"` // 'IN', 'OUT', 'MAYBE'
+}
+
+// ============================================================
+// MiniMatch (Tournament / Multi-Team Pitch Rotation Fixture)
+// ============================================================
+
+type MiniMatch struct {
+	Base
+
+	MatchID      uuid.UUID  `gorm:"type:uuid;index;not null" json:"match_id"`
+	GameNumber   int        `gorm:"not null" json:"game_number"`
+	HomeTeamID   uuid.UUID  `gorm:"type:uuid;not null" json:"home_team_id"`
+	AwayTeamID   uuid.UUID  `gorm:"type:uuid;not null" json:"away_team_id"`
+	HomeScore    int        `gorm:"default:0" json:"home_score"`
+	AwayScore    int        `gorm:"default:0" json:"away_score"`
+	WinnerTeamID *uuid.UUID `gorm:"type:uuid" json:"winner_team_id,omitempty"`
+	Status       string     `gorm:"default:'UPCOMING'" json:"status"` // UPCOMING, LIVE, COMPLETED
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
 }

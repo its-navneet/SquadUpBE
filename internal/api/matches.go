@@ -46,18 +46,21 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		return
 	}
 	var in struct {
-		Name            string `json:"name"`
-		ScheduledAt     string `json:"scheduled_at"`
-		VenueID         string `json:"venue_id"`
-		Venue           string `json:"venue"`
-		VenueMapURL     string `json:"venue_map_url"`
-		Format          string `json:"format"`
-		Notes           string `json:"notes"`
-		DurationMinutes int    `json:"duration_minutes"`
-		TeamCount       int    `json:"team_count"`
-		PlayersPerTeam  int    `json:"players_per_team"`
-		MaxPlayers      int    `json:"max_players"`
-		PollID          string `json:"poll_id"`
+		Name              string `json:"name"`
+		ScheduledAt       string `json:"scheduled_at"`
+		VenueID           string `json:"venue_id"`
+		Venue             string `json:"venue"`
+		VenueMapURL       string `json:"venue_map_url"`
+		Format            string `json:"format"`
+		Notes             string `json:"notes"`
+		DurationMinutes   int    `json:"duration_minutes"`
+		TeamCount         int    `json:"team_count"`
+		PlayersPerTeam    int    `json:"players_per_team"`
+		MaxPlayers        int    `json:"max_players"`
+		PollID            string `json:"poll_id"`
+		TournamentType    string `json:"tournament_type"`
+		MiniMatchDuration int    `json:"mini_match_duration"`
+		DrawRule          string `json:"draw_rule"`
 	}
 	if c.BindJSON(&in) != nil || in.Name == "" {
 		c.JSON(400, err("match name required"))
@@ -72,21 +75,47 @@ func (s *Server) CreateMatch(c *gin.Context) {
 	if e != nil {
 		t = time.Now().Add(24 * time.Hour)
 	}
+
+	actualTeamCount := defaultInt(in.TeamCount, 2)
+	tournamentType := in.TournamentType
+	miniMatchDuration := in.MiniMatchDuration
+	drawRule := in.DrawRule
+
+	// Strict requirement: 2 teams remain identical to before (pure single match)
+	if actualTeamCount <= 2 {
+		tournamentType = "NONE"
+		miniMatchDuration = 0
+		drawRule = ""
+	} else {
+		if tournamentType == "" || tournamentType == "NONE" {
+			tournamentType = "WINNER_STAYS"
+		}
+		if miniMatchDuration <= 0 {
+			miniMatchDuration = 15
+		}
+		if drawRule == "" {
+			drawRule = "DEFENDER_STAYS"
+		}
+	}
+
 	venueName, mapURL := resolveVenue(in.Venue, in.VenueMapURL)
 	m := models.Match{
-		GroupID:         gid,
-		SportID:         g.SportID,
-		Name:            in.Name,
-		ScheduledAt:     t,
-		Format:          in.Format,
-		DurationMinutes: in.DurationMinutes,
-		TeamCount:       defaultInt(in.TeamCount, 2),
-		PlayersPerTeam:  in.PlayersPerTeam,
-		MaxPlayers:      in.MaxPlayers,
-		Notes:           in.Notes,
-		Venue:           venueName,
-		VenueMapURL:     mapURL,
-		Status:          "UPCOMING",
+		GroupID:           gid,
+		SportID:           g.SportID,
+		Name:              in.Name,
+		ScheduledAt:       t,
+		Format:            in.Format,
+		DurationMinutes:   in.DurationMinutes,
+		TeamCount:         actualTeamCount,
+		PlayersPerTeam:    in.PlayersPerTeam,
+		MaxPlayers:        in.MaxPlayers,
+		Notes:             in.Notes,
+		Venue:             venueName,
+		VenueMapURL:       mapURL,
+		Status:            "UPCOMING",
+		TournamentType:    tournamentType,
+		MiniMatchDuration: miniMatchDuration,
+		DrawRule:          drawRule,
 	}
 	if in.VenueID != "" {
 		id := mustUUID(in.VenueID)
@@ -199,17 +228,20 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 		return
 	}
 	var in struct {
-		Name            string `json:"name"`
-		ScheduledAt     string `json:"scheduled_at"`
-		VenueID         string `json:"venue_id"`
-		Venue           string `json:"venue"`
-		VenueMapURL     string `json:"venue_map_url"`
-		Format          string `json:"format"`
-		Notes           string `json:"notes"`
-		DurationMinutes int    `json:"duration_minutes"`
-		TeamCount       int    `json:"team_count"`
-		PlayersPerTeam  int    `json:"players_per_team"`
-		MaxPlayers      int    `json:"max_players"`
+		Name              string `json:"name"`
+		ScheduledAt       string `json:"scheduled_at"`
+		VenueID           string `json:"venue_id"`
+		Venue             string `json:"venue"`
+		VenueMapURL       string `json:"venue_map_url"`
+		Format            string `json:"format"`
+		Notes             string `json:"notes"`
+		DurationMinutes   int    `json:"duration_minutes"`
+		TeamCount         int    `json:"team_count"`
+		PlayersPerTeam    int    `json:"players_per_team"`
+		MaxPlayers        int    `json:"max_players"`
+		TournamentType    string `json:"tournament_type"`
+		MiniMatchDuration int    `json:"mini_match_duration"`
+		DrawRule          string `json:"draw_rule"`
 	}
 	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
 		c.JSON(400, err("match name required"))
@@ -238,6 +270,24 @@ func (s *Server) UpdateMatch(c *gin.Context) {
 	} else if m.TeamCount > 0 && m.PlayersPerTeam > 0 {
 		m.MaxPlayers = m.TeamCount * m.PlayersPerTeam
 	}
+
+	// 2 teams rule: strictly disable tournament fields if <= 2 teams
+	if m.TeamCount <= 2 {
+		m.TournamentType = "NONE"
+		m.MiniMatchDuration = 0
+		m.DrawRule = ""
+	} else {
+		if in.TournamentType != "" {
+			m.TournamentType = in.TournamentType
+		}
+		if in.MiniMatchDuration > 0 {
+			m.MiniMatchDuration = in.MiniMatchDuration
+		}
+		if in.DrawRule != "" {
+			m.DrawRule = in.DrawRule
+		}
+	}
+
 	m.Notes = in.Notes
 	venueName, mapURL := resolveVenue(in.Venue, in.VenueMapURL)
 	m.Venue = venueName
