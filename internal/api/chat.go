@@ -294,7 +294,7 @@ func (s *Server) SendChatMessage(c *gin.Context) {
 	// Detect mentions of squad members and create in-app notifications
 	go func(content string, senderUID uuid.UUID, groupID uuid.UUID) {
 		var members []models.GroupMember
-		s.db.Where("group_id=?", groupID).Find(&members)
+		s.db.Where("group_id=? AND status='ACTIVE'", groupID).Find(&members)
 		var group models.Group
 		if errVal := s.db.First(&group, groupID).Error; errVal != nil {
 			log.Printf("[Chat Mention] Failed to find group %s: %v", groupID, errVal)
@@ -344,12 +344,19 @@ func (s *Server) SendChatMessage(c *gin.Context) {
 				if len(snippet) > 80 {
 					snippet = snippet[:77] + "..."
 				}
-				msg := fmt.Sprintf("%s tagged you in %s: \"%s\"", sender.Name, group.Name, snippet)
+				var title, msg string
+				if hasAllMention {
+					title = fmt.Sprintf("Tagged @everyone in %s", group.Name)
+					msg = fmt.Sprintf("%s tagged @everyone in %s: \"%s\"", sender.Name, group.Name, snippet)
+				} else {
+					title = "Mentioned in squad chat"
+					msg = fmt.Sprintf("%s tagged you in %s: \"%s\"", sender.Name, group.Name, snippet)
+				}
 				notif := models.Notification{
 					UserID:     target.ID,
 					GroupID:    &groupID,
 					Type:       "CHAT_MENTION",
-					Title:      "Mentioned in squad chat",
+					Title:      title,
 					Message:    msg,
 					EntityType: "GROUP_CHAT",
 					EntityID:   &groupID,

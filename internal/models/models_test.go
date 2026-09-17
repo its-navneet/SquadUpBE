@@ -297,3 +297,47 @@ func TestPlayerStatisticsAndCareerStatsSavesAndFouls(t *testing.T) {
 		t.Errorf("expected 4 fouls, got %d", cs.Fouls)
 	}
 }
+
+func TestPollAndPollVoteModels(t *testing.T) {
+	rawPoll := `{
+		"group_id": "a0000000-0000-0000-0000-000000000001",
+		"creator_id": "b0000000-0000-0000-0000-000000000002",
+		"title": "Weekly Friday Match",
+		"match_date": "2026-09-25T18:30:00Z",
+		"duration_minutes": 90,
+		"venue": "Turf Park Arena",
+		"expires_at": "2026-09-24T18:30:00Z",
+		"status": "ACTIVE"
+	}`
+
+	var p models.Poll
+	if err := json.Unmarshal([]byte(rawPoll), &p); err != nil {
+		t.Fatalf("poll unmarshal error: %v", err)
+	}
+	if p.Title != "Weekly Friday Match" {
+		t.Errorf("expected 'Weekly Friday Match', got %s", p.Title)
+	}
+	if p.DurationMinutes != 90 {
+		t.Errorf("expected 90 min, got %d", p.DurationMinutes)
+	}
+	if p.Venue != "Turf Park Arena" {
+		t.Errorf("expected 'Turf Park Arena', got %s", p.Venue)
+	}
+	if p.Status != "ACTIVE" {
+		t.Errorf("expected 'ACTIVE', got %s", p.Status)
+	}
+
+	rawVote := `{
+		"poll_id": "c0000000-0000-0000-0000-000000000003",
+		"user_id": "b0000000-0000-0000-0000-000000000002",
+		"option": "IN"
+	}`
+
+	var pv models.PollVote
+	if err := json.Unmarshal([]byte(rawVote), &pv); err != nil {
+		t.Fatalf("poll vote unmarshal error: %v", err)
+	}
+	if pv.Option != "IN" {
+		t.Errorf("expected 'IN', got %s", pv.Option)
+	}
+}

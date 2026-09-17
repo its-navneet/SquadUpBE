@@ -199,6 +199,12 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.POST("/groups/:id/matches", s.CreateMatch)
 	sec.GET("/groups/:id/matches", s.ListGroupMatches)
 
+	// Match Polls
+	sec.POST("/groups/:id/polls", s.CreatePoll)
+	sec.GET("/groups/:id/polls/active", s.GetActivePoll)
+	sec.POST("/groups/:id/polls/:pollId/vote", s.VotePoll)
+	sec.DELETE("/groups/:id/polls/:pollId", s.DeletePoll)
+
 	// Match-scoped operations
 	sec.Use(s.MatchMembershipMiddleware())
 	sec.GET("/matches/:id", s.GetMatch)

@@ -483,3 +483,32 @@ type AuditLog struct {
 	EntityID    *uuid.UUID `gorm:"type:uuid" json:"entity_id,omitempty"`
 	Metadata    string     `gorm:"type:jsonb" json:"metadata,omitempty"`
 }
+
+// ============================================================
+// Match Availability Poll
+// ============================================================
+
+type Poll struct {
+	Base
+
+	GroupID         uuid.UUID `gorm:"type:uuid;index;not null" json:"group_id"`
+	CreatorID       uuid.UUID `gorm:"type:uuid;index;not null" json:"creator_id"`
+	Title           string    `gorm:"not null" json:"title"`
+	MatchDate       time.Time `gorm:"not null" json:"match_date"`
+	DurationMinutes int       `gorm:"default:60" json:"duration_minutes"`
+	Venue           string    `json:"venue,omitempty"`
+	ExpiresAt       time.Time `gorm:"index;not null" json:"expires_at"`
+	Status          string    `gorm:"default:'ACTIVE'" json:"status"`
+}
+
+// ============================================================
+// Poll Vote
+// ============================================================
+
+type PollVote struct {
+	Base
+
+	PollID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_poll_user" json:"poll_id"`
+	UserID uuid.UUID `gorm:"type:uuid;index;not null;uniqueIndex:idx_poll_user" json:"user_id"`
+	Option string    `gorm:"not null" json:"option"` // 'IN', 'OUT', 'MAYBE'
+}
