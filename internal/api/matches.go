@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (s *Server) ServePosterImage(c *gin.Context) {
@@ -56,6 +57,7 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		TeamCount       int    `json:"team_count"`
 		PlayersPerTeam  int    `json:"players_per_team"`
 		MaxPlayers      int    `json:"max_players"`
+		PollID          string `json:"poll_id"`
 	}
 	if c.BindJSON(&in) != nil || in.Name == "" {
 		c.JSON(400, err("match name required"))
@@ -105,6 +107,31 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		c.JSON(500, err(e.Error()))
 		return
 	}
+
+	// If match was created from an availability poll, auto-RSVP all IN voters and delete the poll
+	if in.PollID != "" {
+		pollID := mustUUID(in.PollID)
+		if pollID != uuid.Nil {
+			var inVotes []models.PollVote
+			if s.db.Where("poll_id = ? AND option = 'IN'", pollID).Find(&inVotes).Error == nil && len(inVotes) > 0 {
+				for _, v := range inVotes {
+					att := models.Attendance{
+						MatchID:     m.ID,
+						UserID:      v.UserID,
+						Status:      "GOING",
+						RespondedAt: time.Now(),
+					}
+					s.db.Clauses(clause.OnConflict{
+						Columns:   []clause.Column{{Name: "match_id"}, {Name: "user_id"}},
+						DoUpdates: clause.AssignmentColumns([]string{"status", "responded_at"}),
+					}).Create(&att)
+				}
+			}
+			s.db.Where("poll_id = ?", pollID).Delete(&models.PollVote{})
+			s.db.Where("id = ?", pollID).Delete(&models.Poll{})
+		}
+	}
+
 	schedulerID := mustUUID(auth.UserID(c))
 	notifyGroupMembers(s.db, gid, &schedulerID, "MATCH_SCHEDULED", "New Match Scheduled", fmt.Sprintf("'%s' has been scheduled for %s in %s. Check the lineup and RSVP!", m.Name, m.ScheduledAt.Format("Mon, Jan 02 • 15:04"), g.Name), "MATCH", &m.ID)
 	c.JSON(201, gin.H{"success": true, "data": m})
