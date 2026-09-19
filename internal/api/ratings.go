@@ -62,6 +62,10 @@ func (s *Server) UpsertUserRating(c *gin.Context) {
 		c.JSON(401, err("unauthorized"))
 		return
 	}
+	if raterUID == ratedUID {
+		c.JSON(400, err("cannot rate yourself"))
+		return
+	}
 	p, e := s.ratingService.Upsert(gid, raterUID, ratedUID, in.Overall, in.Attributes)
 	if e != nil {
 		c.JSON(400, err(e.Error()))
