@@ -14,6 +14,7 @@ import (
 	"squadup/backend/internal/ws"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -89,7 +90,8 @@ func (s *Server) SetRedis(rc *redisx.Client, locker *redisx.Locker, cache *redis
 func cors(origin string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", origin)
-		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Request-ID")
+		c.Header("Access-Control-Expose-Headers", "X-Request-ID")
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		if c.Request.Method == "OPTIONS" {
 			c.Status(204)
@@ -99,9 +101,34 @@ func cors(origin string) gin.HandlerFunc {
 	}
 }
 
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+		c.Next()
+	}
+}
+
+func requestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rid := c.GetHeader("X-Request-ID")
+		if rid == "" {
+			rid = uuid.NewString()
+		}
+		c.Header("X-Request-ID", rid)
+		c.Set("requestID", rid)
+		c.Next()
+	}
+}
+
 func (s *Server) SetupRouter() *gin.Engine {
 	r := gin.Default()
 	_ = r.SetTrustedProxies(nil)
+	r.Use(requestID())
+	r.Use(securityHeaders())
 	r.Use(cors(s.cfg.CORSOrigins))
 	r.GET("/health", func(c *gin.Context) {
 		redisStatus := "in-memory-fallback"
@@ -211,31 +238,31 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.POST("/groups/:id/polls/:pollId/vote", s.VotePoll)
 	sec.DELETE("/groups/:id/polls/:pollId", s.DeletePoll)
 
-	// Match-scoped operations
-	sec.Use(s.MatchMembershipMiddleware())
-	sec.GET("/matches/:id", s.GetMatch)
-	sec.PUT("/matches/:id", s.UpdateMatch)
-	sec.DELETE("/matches/:id", s.DeleteMatch)
-	sec.POST("/matches/:id/attendance", s.MarkAttendance)
-	sec.GET("/matches/:id/attendance", s.GetAttendance)
-	sec.POST("/matches/:id/generate-teams", s.GenerateTeams)
-	sec.GET("/matches/:id/teams", s.GetMatchTeams)
-	sec.POST("/matches/:id/teams/move-player", s.MovePlayer)
-	sec.POST("/matches/:id/teams/swap-players", s.SwapPlayers)
-	sec.GET("/matches/:id/mini-matches", s.GetMiniMatches)
-	sec.POST("/matches/:id/mini-matches/rotate", s.RotateMiniMatch)
-	sec.POST("/matches/:id/mini-matches/start", s.StartMiniMatch)
-	sec.POST("/matches/:id/ai-poster", s.GenerateAIPoster)
-	sec.POST("/matches/:id/start", s.StartMatch)
-	sec.POST("/matches/:id/finish", s.FinishMatch)
-	sec.POST("/matches/:id/events", s.AddMatchEvent)
-	sec.DELETE("/matches/:id/events/:eventId", s.DeleteMatchEvent)
-	sec.GET("/matches/:id/events", s.GetMatchEvents)
-	sec.GET("/matches/:id/result", s.GetMatchResult)
-	sec.POST("/matches/:id/finalize", s.FinalizeMatch)
-
 	// Squad leaderboard
 	sec.GET("/groups/:id/leaderboard", s.GetLeaderboard)
+
+	// Match-scoped operations
+	matchSec := sec.Group("", s.MatchMembershipMiddleware())
+	matchSec.GET("/matches/:id", s.GetMatch)
+	matchSec.PUT("/matches/:id", s.UpdateMatch)
+	matchSec.DELETE("/matches/:id", s.DeleteMatch)
+	matchSec.POST("/matches/:id/attendance", s.MarkAttendance)
+	matchSec.GET("/matches/:id/attendance", s.GetAttendance)
+	matchSec.POST("/matches/:id/generate-teams", s.GenerateTeams)
+	matchSec.GET("/matches/:id/teams", s.GetMatchTeams)
+	matchSec.POST("/matches/:id/teams/move-player", s.MovePlayer)
+	matchSec.POST("/matches/:id/teams/swap-players", s.SwapPlayers)
+	matchSec.GET("/matches/:id/mini-matches", s.GetMiniMatches)
+	matchSec.POST("/matches/:id/mini-matches/rotate", s.RotateMiniMatch)
+	matchSec.POST("/matches/:id/mini-matches/start", s.StartMiniMatch)
+	matchSec.POST("/matches/:id/ai-poster", s.GenerateAIPoster)
+	matchSec.POST("/matches/:id/start", s.StartMatch)
+	matchSec.POST("/matches/:id/finish", s.FinishMatch)
+	matchSec.POST("/matches/:id/events", s.AddMatchEvent)
+	matchSec.DELETE("/matches/:id/events/:eventId", s.DeleteMatchEvent)
+	matchSec.GET("/matches/:id/events", s.GetMatchEvents)
+	matchSec.GET("/matches/:id/result", s.GetMatchResult)
+	matchSec.POST("/matches/:id/finalize", s.FinalizeMatch)
 
 	return r
 }

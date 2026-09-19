@@ -19,6 +19,7 @@ func Open(dsn string) *gorm.DB {
 		sqlDB.SetMaxOpenConns(50)
 		sqlDB.SetMaxIdleConns(25)
 		sqlDB.SetConnMaxLifetime(5 * time.Minute)
+		sqlDB.SetConnMaxIdleTime(2 * time.Minute)
 	}
 	return db
 }
