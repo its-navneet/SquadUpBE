@@ -22,8 +22,22 @@ func (s *Service) Upsert(g, rater, rated uuid.UUID, overall float64, attrs map[s
 	var p models.PlayerRating
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var a, b int64
-		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", g, rater).Count(&a)
-		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", g, rated).Count(&b)
+		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND (TRIM(UPPER(status))='ACTIVE' OR status='' OR status IS NULL)", g, rater).Count(&a)
+		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND (TRIM(UPPER(status))='ACTIVE' OR status='' OR status IS NULL)", g, rated).Count(&b)
+		if a == 0 {
+			var ownerCount int64
+			tx.Model(&models.Group{}).Where("id=? AND owner_id=?", g, rater).Count(&ownerCount)
+			if ownerCount > 0 {
+				a = 1
+			}
+		}
+		if b == 0 {
+			var ownerCount int64
+			tx.Model(&models.Group{}).Where("id=? AND owner_id=?", g, rated).Count(&ownerCount)
+			if ownerCount > 0 {
+				b = 1
+			}
+		}
 		if a == 0 || b == 0 {
 			return errors.New("both players must be active members")
 		}

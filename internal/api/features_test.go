@@ -144,3 +144,46 @@ func TestResetPasswordValidation(t *testing.T) {
 		t.Errorf("expected 400 for empty email, got %d", w.Code)
 	}
 }
+
+func TestUpsertUserRatingPayloadBinding(t *testing.T) {
+	// 1. Verify rated_user_id snake_case binding
+	snakeJSON := []byte(`{
+		"rated_user_id": "b11a9172-8d76-4d2b-9366-0775e7a9b011",
+		"overall": 8.5,
+		"attributes": {"pace": 8.0, "shooting": 9.0}
+	}`)
+	var inSnake struct {
+		RatedUserID      string             `json:"rated_user_id"`
+		RatedUserIDCamel string             `json:"ratedUserId"`
+		Overall          float64            `json:"overall"`
+		Attributes       map[string]float64 `json:"attributes"`
+	}
+	if err := json.Unmarshal(snakeJSON, &inSnake); err != nil {
+		t.Fatalf("failed to unmarshal snake_case JSON: %v", err)
+	}
+	if inSnake.RatedUserID != "b11a9172-8d76-4d2b-9366-0775e7a9b011" {
+		t.Errorf("expected rated_user_id to be populated, got '%s'", inSnake.RatedUserID)
+	}
+	if inSnake.Overall != 8.5 {
+		t.Errorf("expected overall 8.5, got %f", inSnake.Overall)
+	}
+
+	// 2. Verify ratedUserId camelCase binding
+	camelJSON := []byte(`{
+		"ratedUserId": "b11a9172-8d76-4d2b-9366-0775e7a9b011",
+		"overall": 7.0,
+		"attributes": {"passing": 7.5}
+	}`)
+	var inCamel struct {
+		RatedUserID      string             `json:"rated_user_id"`
+		RatedUserIDCamel string             `json:"ratedUserId"`
+		Overall          float64            `json:"overall"`
+		Attributes       map[string]float64 `json:"attributes"`
+	}
+	if err := json.Unmarshal(camelJSON, &inCamel); err != nil {
+		t.Fatalf("failed to unmarshal camelCase JSON: %v", err)
+	}
+	if inCamel.RatedUserIDCamel != "b11a9172-8d76-4d2b-9366-0775e7a9b011" {
+		t.Errorf("expected ratedUserId to be populated, got '%s'", inCamel.RatedUserIDCamel)
+	}
+}

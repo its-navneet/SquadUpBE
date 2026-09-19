@@ -7,6 +7,7 @@ import (
 	"squadup/backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func (s *Server) GetUserRating(c *gin.Context) {
@@ -33,16 +34,35 @@ func (s *Server) GetUserRating(c *gin.Context) {
 
 func (s *Server) UpsertUserRating(c *gin.Context) {
 	var in struct {
-		RatedUserID string
-		Overall     float64
-		Attributes  map[string]float64
+		RatedUserID      string             `json:"rated_user_id"`
+		RatedUserIDCamel string             `json:"ratedUserId"`
+		Overall          float64            `json:"overall"`
+		Attributes       map[string]float64 `json:"attributes"`
 	}
 	if c.BindJSON(&in) != nil {
 		c.JSON(400, err("invalid request"))
 		return
 	}
+	targetID := in.RatedUserID
+	if targetID == "" {
+		targetID = in.RatedUserIDCamel
+	}
+	ratedUID := mustUUID(targetID)
+	if ratedUID == uuid.Nil {
+		c.JSON(400, err("valid rated_user_id is required"))
+		return
+	}
 	gid := mustUUID(c.Param("id"))
-	p, e := s.ratingService.Upsert(gid, mustUUID(auth.UserID(c)), mustUUID(in.RatedUserID), in.Overall, in.Attributes)
+	if gid == uuid.Nil {
+		c.JSON(400, err("invalid group id"))
+		return
+	}
+	raterUID := mustUUID(auth.UserID(c))
+	if raterUID == uuid.Nil {
+		c.JSON(401, err("unauthorized"))
+		return
+	}
+	p, e := s.ratingService.Upsert(gid, raterUID, ratedUID, in.Overall, in.Attributes)
 	if e != nil {
 		c.JSON(400, err(e.Error()))
 		return
