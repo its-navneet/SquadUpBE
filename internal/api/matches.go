@@ -2,10 +2,7 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -189,6 +186,17 @@ func (s *Server) ListGroupMatches(c *gin.Context) {
 	}
 	var msx []models.Match
 	s.db.Where("group_id=?", gid).Order("scheduled_at DESC").Find(&msx)
+	for i := range msx {
+		if msx[i].VenueID != nil && msx[i].Venue == "" {
+			var v models.Venue
+			if s.db.First(&v, *msx[i].VenueID).Error == nil {
+				msx[i].Venue = v.Name
+				if msx[i].VenueMapURL == "" {
+					msx[i].VenueMapURL = v.GoogleMapsURL
+				}
+			}
+		}
+	}
 	c.JSON(200, gin.H{"success": true, "data": msx})
 }
 
@@ -215,7 +223,24 @@ func (s *Server) MatchMembershipMiddleware() gin.HandlerFunc {
 				}
 				return
 			}
+			if m.VenueID != nil && m.Venue == "" {
+				var v models.Venue
+				if s.db.First(&v, *m.VenueID).Error == nil {
+					m.Venue = v.Name
+					if m.VenueMapURL == "" {
+						m.VenueMapURL = v.GoogleMapsURL
+					}
+				}
+			}
 			_ = s.cache.Set(c.Request.Context(), cacheKey, m, 30*time.Second)
+		} else if m.VenueID != nil && m.Venue == "" {
+			var v models.Venue
+			if s.db.First(&v, *m.VenueID).Error == nil {
+				m.Venue = v.Name
+				if m.VenueMapURL == "" {
+					m.VenueMapURL = v.GoogleMapsURL
+				}
+			}
 		}
 		if !mustMember(s.db, m.GroupID, mustUUID(auth.UserID(c))) {
 			c.AbortWithStatusJSON(403, err("not a group member"))
@@ -390,258 +415,6 @@ func (s *Server) DeleteMatch(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": true, "message": "match deleted successfully"})
-}
-
-func (s *Server) GenerateAIPoster(c *gin.Context) {
-	mid := mustUUID(c.Param("id"))
-	uid := mustUUID(auth.UserID(c))
-	if !mustMatchMember(s.db, mid, uid) {
-		c.JSON(403, err("only squad members can generate a match poster"))
-		return
-	}
-
-	token, acquired, _ := s.locker.Acquire(c.Request.Context(), "match:poster:"+mid.String(), 45*time.Second)
-	if !acquired {
-		c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": gin.H{"message": "AI poster generation is already in progress for this match"}})
-		return
-	}
-	defer s.locker.Release(context.Background(), "match:poster:"+mid.String(), token)
-
-	var in struct {
-		APIKey      string `json:"apiKey"`
-		Style       string `json:"style"`
-		ImageBase64 string `json:"image_base64"`
-		PosterURL   string `json:"poster_url"`
-	}
-	_ = c.ShouldBindJSON(&in)
-
-	var m models.Match
-	if s.db.First(&m, mid).Error != nil {
-		c.JSON(404, err("match not found"))
-		return
-	}
-
-	var imgBytes []byte
-	var prompt string
-
-	// Check if client uploaded poster directly (e.g. from Firebase AI Logic)
-	if f, _, errFile := c.Request.FormFile("image"); errFile == nil {
-		defer f.Close()
-		imgBytes, _ = io.ReadAll(io.LimitReader(f, 10*1024*1024))
-	} else if f, _, errFile := c.Request.FormFile("poster"); errFile == nil {
-		defer f.Close()
-		imgBytes, _ = io.ReadAll(io.LimitReader(f, 10*1024*1024))
-	} else if in.ImageBase64 != "" {
-		b64 := in.ImageBase64
-		if idx := strings.Index(b64, ","); idx != -1 {
-			b64 = b64[idx+1:]
-		}
-		var decodeErr error
-		imgBytes, decodeErr = base64.StdEncoding.DecodeString(b64)
-		if decodeErr != nil {
-			c.JSON(400, err("invalid base64 image data"))
-			return
-		}
-	}
-
-	// If no pre-generated image bytes provided, generate via server-side Gemini/Google AI
-	if len(imgBytes) == 0 {
-		apiKey := in.APIKey
-		if apiKey == "" && s.imageClient != nil {
-			apiKey = s.imageClient.APIKey
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("GEMINI_API_KEY")
-		}
-		if apiKey == "" {
-			c.JSON(400, err("GEMINI_API_KEY not configured on backend server. Posters can be generated directly using Firebase AI on the app."))
-			return
-		}
-
-		var ts []models.Team
-		s.db.Where("match_id=?", mid).Order("created_at ASC, id ASC").Find(&ts)
-		if len(ts) < 2 {
-			c.JSON(400, err("Please divide/generate teams first before creating a team division poster."))
-			return
-		}
-
-		type teamLineup struct {
-			Name    string
-			Players []string
-		}
-		var lineups []teamLineup
-		for _, t := range ts {
-			var tMembers []models.TeamMember
-			s.db.Where("team_id = ?", t.ID).Find(&tMembers)
-			var uids []uuid.UUID
-			for _, tm := range tMembers {
-				uids = append(uids, tm.UserID)
-			}
-			var users []models.User
-			if len(uids) > 0 {
-				s.db.Where("id IN ?", uids).Find(&users)
-			}
-			var playerNames []string
-			for _, u := range users {
-				playerNames = append(playerNames, u.Name)
-			}
-			lineups = append(lineups, teamLineup{Name: t.Name, Players: playerNames})
-		}
-
-		var g models.Group
-		s.db.First(&g, m.GroupID)
-
-		var ven models.Venue
-		venueName := "Matchday Turf Arena"
-		if m.VenueID != nil && s.db.First(&ven, *m.VenueID).Error == nil && ven.Name != "" {
-			venueName = ven.Name
-		}
-
-		var sp models.Sport
-		sportLower := "football"
-		if s.db.First(&sp, m.SportID).Error == nil && sp.Name != "" {
-			sportLower = strings.ToLower(sp.Name)
-		}
-
-		var matchTeamBlocks []string
-		for i, line := range lineups {
-			tName := line.Name
-			if strings.TrimSpace(tName) == "" {
-				tName = fmt.Sprintf("Team %d", i+1)
-			}
-			playersStr := strings.Join(line.Players, ", ")
-			if strings.TrimSpace(playersStr) == "" {
-				playersStr = "Squad Players"
-			}
-			matchTeamBlocks = append(matchTeamBlocks, fmt.Sprintf("TEAM %d: %s\nPLAYERS: %s", i+1, tName, playersStr))
-		}
-		if len(matchTeamBlocks) == 0 {
-			matchTeamBlocks = append(matchTeamBlocks, "TEAM 1: Team 1\nPLAYERS: Squad Players", "TEAM 2: Team 2\nPLAYERS: Squad Players")
-		}
-		matchSection := strings.Join(matchTeamBlocks, "\n\nVS\n\n")
-
-		dateStr := "TBD"
-		timeStr := "TBD"
-		if !m.ScheduledAt.IsZero() {
-			dateStr = m.ScheduledAt.Format("02 Jan 2006")
-			timeStr = m.ScheduledAt.Format("03:04 PM")
-		}
-
-		teamCount := len(lineups)
-		layoutVs := "* Large centered \"VS\"\n"
-		if teamCount > 2 {
-			layoutVs = fmt.Sprintf("* Multi-team triangular or round-robin division showing all %d teams prominently with VS dividers between them\n", teamCount)
-		}
-
-		prompt = fmt.Sprintf(
-			"Create a premium modern %s match poster for a casual recreational game.\n\n"+
-				"VISUAL STYLE:\n"+
-				"- Professional %s sports promotional poster\n"+
-				"- Night stadium with dramatic floodlights and subtle fog\n"+
-				"- Dark cinematic background with a %s pitch\n"+
-				"- Bold modern sports typography\n"+
-				"- Clean, minimal, premium graphic design\n"+
-				"- Strong contrast and clear visual hierarchy\n"+
-				"- Vertical 4:5 social-media poster\n\n"+
-				"MATCH INFORMATION:\n"+
-				"%s\n\n"+
-				"DATE: %s\n"+
-				"TIME: %s\n"+
-				"VENUE: %s\n\n"+
-				"LAYOUT:\n"+
-				"- Large 'MATCH DAY' heading at the top\n"+
-				"- Display all %d teams prominently\n"+
-				"- Display the players underneath their respective teams\n"+
-				"%s"+
-				"- Display date, time and venue clearly at the bottom\n"+
-				"- Keep the layout balanced and uncluttered\n"+
-				"- Make all important information readable on a mobile screen\n\n"+
-				"TEXT ACCURACY:\n"+
-				"- Use the provided team names and player names exactly as written\n"+
-				"- Preserve exact spelling, capitalization, numbers and punctuation\n"+
-				"- Do not rewrite, abbreviate or modify any provided text\n"+
-				"- Do not omit any team or player\n"+
-				"- All %d teams must appear in the final poster\n"+
-				"- Treat all provided information as fixed text that must be rendered accurately\n\n"+
-				"DO NOT ADD:\n"+
-				"- No invented players\n"+
-				"- No scores\n"+
-				"- No sponsors\n"+
-				"- No hashtags\n"+
-				"- No extra text\n"+
-				"- No professional club logos or branding\n"+
-				"- No fictional team information\n\n"+
-				"Create a polished, premium recreational sports poster with highly accurate typography and a professional modern composition.",
-			sportLower,
-			sportLower,
-			sportLower,
-			matchSection,
-			dateStr,
-			timeStr,
-			venueName,
-			teamCount,
-			layoutVs,
-			teamCount,
-		)
-
-		var genErr error
-		imgBytes, genErr = s.imageClient.Generate(c.Request.Context(), prompt, apiKey)
-		if genErr != nil {
-			c.JSON(500, err(genErr.Error()))
-			return
-		}
-	}
-
-	mimeType := http.DetectContentType(imgBytes)
-	if !strings.HasPrefix(mimeType, "image/") {
-		trimmed := strings.TrimSpace(string(imgBytes))
-		if strings.HasPrefix(trimmed, "{") {
-			c.JSON(500, err(fmt.Sprintf("image generation failed: %s", trimmed)))
-			return
-		}
-		mimeType = "image/png"
-	}
-
-	// Persist poster image to storage (Amazon S3 / B2 or fallback)
-	posterFilename := fmt.Sprintf("posters/%s.png", mid.String())
-	posterURL, uploadErr := s.storage.Upload(c.Request.Context(), posterFilename, imgBytes, "image/png")
-	if uploadErr != nil {
-		log.Printf("Failed to upload poster to storage: %v", uploadErr)
-		scheme := "http"
-		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		posterURL = fmt.Sprintf("%s://%s/api/matches/%s/poster-image", scheme, c.Request.Host, mid.String())
-	} else if strings.HasPrefix(posterURL, "/") {
-		scheme := "http"
-		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		posterURL = fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, posterURL)
-	}
-
-	// Keep local disk copies as fallback for /api/matches/:id/poster-image
-	uploadsDir := filepath.Join("uploads", "match-posters")
-	_ = os.MkdirAll(uploadsDir, 0755)
-	_ = os.WriteFile(filepath.Join(uploadsDir, fmt.Sprintf("%s.png", mid.String())), imgBytes, 0644)
-	uploadsLegacyDir := filepath.Join("uploads", "posters")
-	_ = os.MkdirAll(uploadsLegacyDir, 0755)
-	_ = os.WriteFile(filepath.Join(uploadsLegacyDir, fmt.Sprintf("%s.png", mid.String())), imgBytes, 0644)
-
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgBytes))
-
-	// Persist on match and invalidate cache
-	s.db.Model(&models.Match{}).Where("id = ?", mid).Update("poster_url", posterURL)
-	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+mid.String())
-
-	c.JSON(200, gin.H{
-		"success": true,
-		"data": gin.H{
-			"image_url":  dataURL,
-			"poster_url": posterURL,
-			"prompt":     prompt,
-		},
-	})
 }
 
 func (s *Server) StartMatch(c *gin.Context) {

@@ -255,7 +255,6 @@ func (s *Server) SetupRouter() *gin.Engine {
 	matchSec.GET("/matches/:id/mini-matches", s.GetMiniMatches)
 	matchSec.POST("/matches/:id/mini-matches/rotate", s.RotateMiniMatch)
 	matchSec.POST("/matches/:id/mini-matches/start", s.StartMiniMatch)
-	matchSec.POST("/matches/:id/ai-poster", s.GenerateAIPoster)
 	matchSec.POST("/matches/:id/start", s.StartMatch)
 	matchSec.POST("/matches/:id/finish", s.FinishMatch)
 	matchSec.POST("/matches/:id/events", s.AddMatchEvent)
