@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func (s *Server) CreateGroup(c *gin.Context) {
@@ -596,4 +597,76 @@ func (s *Server) RejectJoinRequest(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": true, "data": r})
+}
+
+func (s *Server) DeleteGroup(c *gin.Context) {
+	gid := mustUUID(c.Param("id"))
+	uid := mustUUID(auth.UserID(c))
+
+	var g models.Group
+	if e := s.db.First(&g, gid).Error; e != nil {
+		c.JSON(404, err("group not found"))
+		return
+	}
+
+	if g.OwnerID != uid {
+		c.JSON(403, err("only the squad owner can delete this squad"))
+		return
+	}
+
+	errTx := s.db.Transaction(func(tx *gorm.DB) error {
+		// Find all match IDs
+		var matchIDs []uuid.UUID
+		tx.Model(&models.Match{}).Where("group_id = ?", gid).Pluck("id", &matchIDs)
+
+		if len(matchIDs) > 0 {
+			// Find team IDs
+			var teamIDs []uuid.UUID
+			tx.Model(&models.Team{}).Where("match_id IN ?", matchIDs).Pluck("id", &teamIDs)
+			if len(teamIDs) > 0 {
+				tx.Where("team_id IN ?", teamIDs).Delete(&models.TeamMember{})
+				tx.Where("id IN ?", teamIDs).Delete(&models.Team{})
+			}
+			tx.Where("match_id IN ?", matchIDs).Delete(&models.MatchEvent{})
+			tx.Where("match_id IN ?", matchIDs).Delete(&models.MatchResult{})
+			tx.Where("match_id IN ?", matchIDs).Delete(&models.Attendance{})
+			tx.Where("match_id IN ?", matchIDs).Delete(&models.MiniMatch{})
+			tx.Where("id IN ?", matchIDs).Delete(&models.Match{})
+		}
+
+		// Delete polls & votes
+		var pollIDs []uuid.UUID
+		tx.Model(&models.Poll{}).Where("group_id = ?", gid).Pluck("id", &pollIDs)
+		if len(pollIDs) > 0 {
+			tx.Where("poll_id IN ?", pollIDs).Delete(&models.PollVote{})
+			tx.Where("id IN ?", pollIDs).Delete(&models.Poll{})
+		}
+
+		// Delete ratings & attributes
+		var ratingIDs []uuid.UUID
+		tx.Model(&models.PlayerRating{}).Where("group_id = ?", gid).Pluck("id", &ratingIDs)
+		if len(ratingIDs) > 0 {
+			tx.Where("player_rating_id IN ?", ratingIDs).Delete(&models.PlayerRatingAttribute{})
+			tx.Where("id IN ?", ratingIDs).Delete(&models.PlayerRating{})
+		}
+
+		// Delete chat
+		tx.Where("group_id = ?", gid).Delete(&models.ChatMessageRead{})
+		tx.Where("group_id = ?", gid).Delete(&models.ChatMessage{})
+
+		// Delete venues, statistics, join requests, members, group
+		tx.Where("group_id = ?", gid).Delete(&models.Venue{})
+		tx.Where("group_id = ?", gid).Delete(&models.PlayerStatistics{})
+		tx.Where("group_id = ?", gid).Delete(&models.GroupJoinRequest{})
+		tx.Where("group_id = ?", gid).Delete(&models.GroupMember{})
+		return tx.Delete(&g).Error
+	})
+
+	if errTx != nil {
+		c.JSON(500, err("failed to delete squad: "+errTx.Error()))
+		return
+	}
+
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:leaderboard:"+gid.String())
+	c.JSON(200, gin.H{"success": true, "message": "squad deleted successfully"})
 }

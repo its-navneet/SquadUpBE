@@ -25,7 +25,8 @@ func (s *Server) MarkAttendance(c *gin.Context) {
 	}
 	uid := mustUUID(auth.UserID(c))
 	var in struct {
-		Status string `json:"status"`
+		Status string  `json:"status"`
+		UserID *string `json:"user_id"`
 	}
 	if c.ShouldBindJSON(&in) != nil {
 		c.JSON(400, err("invalid request"))
@@ -36,15 +37,27 @@ func (s *Server) MarkAttendance(c *gin.Context) {
 		c.JSON(400, err("invalid attendance status"))
 		return
 	}
-	if !mustMatchMember(s.db, mid, uid) {
-		c.JSON(403, err("not a group member"))
+
+	targetUID := uid
+	if in.UserID != nil && strings.TrimSpace(*in.UserID) != "" {
+		if parsedUID, errP := uuid.Parse(strings.TrimSpace(*in.UserID)); errP == nil && parsedUID != uuid.Nil && parsedUID != uid {
+			if !isGroupAdmin(s.db, m.GroupID, uid) {
+				c.JSON(403, err("only squad admins can record attendance for other players"))
+				return
+			}
+			targetUID = parsedUID
+		}
+	}
+
+	if !mustMatchMember(s.db, mid, targetUID) {
+		c.JSON(403, err("target player is not a squad member"))
 		return
 	}
 	// Cleanly remove any existing attendance for this match & user to prevent duplicates
-	s.db.Where("match_id = ? AND user_id = ?", mid, uid).Delete(&models.Attendance{})
+	s.db.Where("match_id = ? AND user_id = ?", mid, targetUID).Delete(&models.Attendance{})
 	a := models.Attendance{
 		MatchID:     mid,
-		UserID:      uid,
+		UserID:      targetUID,
 		Status:      st,
 		RespondedAt: time.Now(),
 	}
@@ -61,11 +74,11 @@ func (s *Server) MarkAttendance(c *gin.Context) {
 				WHERE user_id = ? AND team_id IN (
 					SELECT id FROM teams WHERE match_id = ?
 				)
-			`, uid, mid)
+			`, targetUID, mid)
 		}
 	}
 	var u models.User
-	s.db.First(&u, uid)
+	s.db.First(&u, targetUID)
 	c.JSON(200, gin.H{"success": true, "data": a, "user": u})
 }
 

@@ -95,7 +95,86 @@ func (s *Server) ListVenues(c *gin.Context) {
 		return
 	}
 	var vs []models.Venue
-	s.db.Where("group_id=?", gid).Find(&vs)
+	s.db.Where("group_id=?", gid).Order("is_default DESC, name ASC").Find(&vs)
 	c.JSON(200, gin.H{"success": true, "data": vs})
 }
 
+func (s *Server) UpdateVenue(c *gin.Context) {
+	gid := mustUUID(c.Param("id"))
+	vid := mustUUID(c.Param("venueId"))
+	uid := mustUUID(auth.UserID(c))
+	if !mustAdmin(s.db, gid, uid) {
+		c.JSON(403, err("admin only"))
+		return
+	}
+	var v models.Venue
+	if e := s.db.Where("id = ? AND group_id = ?", vid, gid).First(&v).Error; e != nil {
+		c.JSON(404, err("venue not found"))
+		return
+	}
+	var in struct {
+		Name          *string  `json:"name"`
+		Address       *string  `json:"address"`
+		GoogleMapsURL *string  `json:"google_maps_url"`
+		Notes         *string  `json:"notes"`
+		Latitude      *float64 `json:"latitude"`
+		Longitude     *float64 `json:"longitude"`
+		IsDefault     *bool    `json:"is_default"`
+	}
+	if c.BindJSON(&in) != nil {
+		c.JSON(400, err("invalid request"))
+		return
+	}
+	if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+		v.Name = strings.TrimSpace(*in.Name)
+	}
+	if in.Address != nil {
+		v.Address = strings.TrimSpace(*in.Address)
+	}
+	if in.GoogleMapsURL != nil {
+		v.GoogleMapsURL = strings.TrimSpace(*in.GoogleMapsURL)
+	}
+	if in.Notes != nil {
+		v.Notes = strings.TrimSpace(*in.Notes)
+	}
+	if in.Latitude != nil {
+		v.Latitude = in.Latitude
+	}
+	if in.Longitude != nil {
+		v.Longitude = in.Longitude
+	}
+	if in.IsDefault != nil {
+		v.IsDefault = *in.IsDefault
+		if v.IsDefault {
+			s.db.Model(&models.Venue{}).Where("group_id = ? AND id != ?", gid, vid).Update("is_default", false)
+		}
+	}
+	if e := s.db.Save(&v).Error; e != nil {
+		c.JSON(500, err(e.Error()))
+		return
+	}
+	c.JSON(200, gin.H{"success": true, "data": v})
+}
+
+func (s *Server) DeleteVenue(c *gin.Context) {
+	gid := mustUUID(c.Param("id"))
+	vid := mustUUID(c.Param("venueId"))
+	uid := mustUUID(auth.UserID(c))
+	if !mustAdmin(s.db, gid, uid) {
+		c.JSON(403, err("admin only"))
+		return
+	}
+	var v models.Venue
+	if e := s.db.Where("id = ? AND group_id = ?", vid, gid).First(&v).Error; e != nil {
+		c.JSON(404, err("venue not found"))
+		return
+	}
+	// Nullify venue_id on matches referencing this venue
+	s.db.Model(&models.Match{}).Where("venue_id = ?", vid).Update("venue_id", nil)
+
+	if e := s.db.Delete(&v).Error; e != nil {
+		c.JSON(500, err(e.Error()))
+		return
+	}
+	c.JSON(200, gin.H{"success": true})
+}

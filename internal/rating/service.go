@@ -2,6 +2,7 @@ package rating
 
 import (
 	"errors"
+	"math"
 	"squadup/backend/internal/models"
 
 	"github.com/google/uuid"
@@ -63,4 +64,35 @@ func (s *Service) Average(g, u uuid.UUID) (float64, int64, error) {
 		return 0, 0, e
 	}
 	return avg, count, nil
+}
+
+func (s *Service) AverageWithAttributes(g, u uuid.UUID) (float64, int64, map[string]float64, error) {
+	avg, count, err := s.Average(g, u)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	attrs := make(map[string]float64)
+	if count == 0 {
+		return avg, 0, attrs, nil
+	}
+
+	type attrAvg struct {
+		Attribute string  `gorm:"column:attribute"`
+		AvgValue  float64 `gorm:"column:avg_value"`
+	}
+	var res []attrAvg
+	err = s.DB.Table("player_rating_attributes").
+		Joins("JOIN player_ratings ON player_ratings.id = player_rating_attributes.player_rating_id").
+		Where("player_ratings.group_id = ? AND player_ratings.rated_user_id = ?", g, u).
+		Select("player_rating_attributes.attribute, AVG(player_rating_attributes.value) as avg_value").
+		Group("player_rating_attributes.attribute").
+		Scan(&res).Error
+	if err != nil {
+		return avg, count, attrs, err
+	}
+
+	for _, r := range res {
+		attrs[r.Attribute] = math.Round(r.AvgValue*10) / 10
+	}
+	return math.Round(avg*10) / 10, count, attrs, nil
 }

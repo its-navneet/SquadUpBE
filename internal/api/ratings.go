@@ -16,12 +16,19 @@ func (s *Server) GetUserRating(c *gin.Context) {
 		c.JSON(403, err("not a group member"))
 		return
 	}
-	avg, n, e := s.ratingService.Average(gid, mustUUID(c.Param("userId")))
+	avg, n, attrs, e := s.ratingService.AverageWithAttributes(gid, mustUUID(c.Param("userId")))
 	if e != nil {
 		c.JSON(500, err(e.Error()))
 		return
 	}
-	c.JSON(200, gin.H{"success": true, "data": gin.H{"average": avg, "count": n}})
+	c.JSON(200, gin.H{
+		"success": true,
+		"data": gin.H{
+			"average":    avg,
+			"count":      n,
+			"attributes": attrs,
+		},
+	})
 }
 
 func (s *Server) UpsertUserRating(c *gin.Context) {

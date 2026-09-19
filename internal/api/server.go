@@ -132,6 +132,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 	apiGroup.POST("/upload/image", authLimitMiddleware, s.UploadImage)
 	apiGroup.POST("/auth/register", authLimitMiddleware, s.Register)
 	apiGroup.POST("/auth/login", authLimitMiddleware, s.Login)
+	apiGroup.POST("/auth/reset-password", authLimitMiddleware, s.ResetPassword)
 
 	// Authenticated routes
 	sec := apiGroup.Group("")
@@ -141,6 +142,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.GET("/users/me", s.GetMe)
 	sec.GET("/users/:id", s.GetUser)
 	sec.PUT("/users/me", s.UpdateMe)
+	sec.PUT("/users/me/password", s.ChangePassword)
 	sec.POST("/users/device-token", s.RegisterDeviceToken)
 	sec.DELETE("/users/device-token", s.DeleteDeviceToken)
 
@@ -152,6 +154,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.GET("/groups", s.ListGroups)
 	sec.GET("/groups/:id", s.GetGroup)
 	sec.PATCH("/groups/:id", s.UpdateGroup)
+	sec.DELETE("/groups/:id", s.DeleteGroup)
 	sec.GET("/groups/:id/members", s.ListMembers)
 	sec.PUT("/groups/:id/members/:userId/role", s.UpdateMemberRole)
 	sec.POST("/groups/:id/members/:userId/role", s.UpdateMemberRole)
@@ -184,6 +187,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 	sec.GET("/groups/:id/chat/messages/:message_id/seen", s.GetSeenStatus)
 	sec.GET("/groups/:id/chat/:message_id/seen", s.GetSeenStatus)
 	sec.POST("/groups/:id/chat", s.SendChatMessage)
+	sec.DELETE("/groups/:id/chat/:messageId", s.DeleteChatMessage)
 
 	// WebSockets & Presence
 	sec.GET("/presence/online", s.GetOnlinePresence)
@@ -194,6 +198,8 @@ func (s *Server) SetupRouter() *gin.Engine {
 	// Venues
 	sec.POST("/groups/:id/venues", s.CreateVenue)
 	sec.GET("/groups/:id/venues", s.ListVenues)
+	sec.PUT("/groups/:id/venues/:venueId", s.UpdateVenue)
+	sec.DELETE("/groups/:id/venues/:venueId", s.DeleteVenue)
 
 	// Group Matches
 	sec.POST("/groups/:id/matches", s.CreateMatch)

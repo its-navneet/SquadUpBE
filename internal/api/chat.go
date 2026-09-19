@@ -373,3 +373,44 @@ func (s *Server) SendChatMessage(c *gin.Context) {
 
 	c.JSON(201, gin.H{"success": true, "data": m})
 }
+
+func (s *Server) DeleteChatMessage(c *gin.Context) {
+	gid := mustUUID(c.Param("id"))
+	mid := mustUUID(c.Param("messageId"))
+	uid := mustUUID(auth.UserID(c))
+
+	if !mustMember(s.db, gid, uid) {
+		c.JSON(403, err("not a group member"))
+		return
+	}
+
+	var m models.ChatMessage
+	if e := s.db.Where("id = ? AND group_id = ?", mid, gid).First(&m).Error; e != nil {
+		c.JSON(404, err("message not found"))
+		return
+	}
+
+	isAdmin := isGroupAdmin(s.db, gid, uid)
+	if m.SenderID != uid && !isAdmin {
+		c.JSON(403, err("only message sender or squad admin can delete this message"))
+		return
+	}
+
+	s.db.Where("message_id = ?", mid).Delete(&models.ChatMessageRead{})
+	if e := s.db.Delete(&m).Error; e != nil {
+		c.JSON(500, err("failed to delete message"))
+		return
+	}
+
+	if s.hub != nil {
+		s.hub.Broadcast(gid.String(), ws.Event{
+			Type: "CHAT_MESSAGE_DELETED",
+			Data: gin.H{
+				"message_id": mid.String(),
+				"group_id":   gid.String(),
+			},
+		})
+	}
+
+	c.JSON(200, gin.H{"success": true, "message": "message deleted"})
+}

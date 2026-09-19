@@ -88,27 +88,30 @@ type SportPosition struct {
 type User struct {
 	Base
 
-	Name               string       `gorm:"not null" json:"name"`
-	Email              string       `gorm:"uniqueIndex;not null" json:"email"`
-	PasswordHash       string       `gorm:"not null" json:"-"`
-	DateOfBirth        string       `gorm:"type:varchar(10)" json:"date_of_birth"`
-	Age                int          `json:"age"`
-	HeightCM           float64      `json:"height_cm"`
-	WeightKG           float64      `json:"weight_kg"`
-	ProfilePhotoURL    string       `json:"profile_photo_url"`
-	ProfilePhotoBucket string       `json:"profile_photo_bucket,omitempty"`
-	ProfilePhotoKey    string       `json:"profile_photo_key,omitempty"`
-	PreferredFoot      string       `json:"preferred_foot"`
-	Bio                string       `json:"bio"`
-	Position           string       `json:"position"`
-	KitNumber          int          `json:"kit_number"`
-	FavouriteClub      string       `json:"favourite_club"`
-	FavouritePlayer    string       `json:"favourite_player"`
-	CareerMatches      int          `json:"career_matches"`
-	CareerGoals        int          `json:"career_goals"`
-	CareerAssists      int          `json:"career_assists"`
-	CareerMVPs         int          `json:"career_mvps"`
-	CareerStats        *CareerStats `gorm:"-" json:"career_stats,omitempty"`
+	Name               string             `gorm:"not null" json:"name"`
+	Email              string             `gorm:"uniqueIndex;not null" json:"email"`
+	PasswordHash       string             `gorm:"not null" json:"-"`
+	DateOfBirth        string             `gorm:"type:varchar(10)" json:"date_of_birth"`
+	Age                int                `json:"age"`
+	HeightCM           float64            `json:"height_cm"`
+	WeightKG           float64            `json:"weight_kg"`
+	ProfilePhotoURL    string             `json:"profile_photo_url"`
+	ProfilePhotoBucket string             `json:"profile_photo_bucket,omitempty"`
+	ProfilePhotoKey    string             `json:"profile_photo_key,omitempty"`
+	PreferredFoot      string             `json:"preferred_foot"`
+	Bio                string             `json:"bio"`
+	Position           string             `json:"position"`
+	KitNumber          int                `json:"kit_number"`
+	FavouriteClub      string             `json:"favourite_club"`
+	FavouritePlayer    string             `json:"favourite_player"`
+	CareerMatches      int                `json:"career_matches"`
+	CareerGoals        int                `json:"career_goals"`
+	CareerAssists      int                `json:"career_assists"`
+	CareerMVPs         int                `json:"career_mvps"`
+	CareerStats        *CareerStats       `gorm:"-" json:"career_stats,omitempty"`
+	OverallRating      float64            `gorm:"-" json:"overall_rating,omitempty"`
+	RatingsCount       int                `gorm:"-" json:"ratings_count,omitempty"`
+	SkillAttributes    map[string]float64 `gorm:"-" json:"skill_attributes,omitempty"`
 }
 
 func (u User) MarshalJSON() ([]byte, error) {

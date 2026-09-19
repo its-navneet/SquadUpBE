@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 
+	"squadup/backend/internal/auth"
 	"squadup/backend/internal/models"
 	"squadup/backend/internal/storage"
 
@@ -129,3 +130,62 @@ func (s *Server) Login(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "data": gin.H{"token": tok, "user": u}})
 }
 
+func (s *Server) ResetPassword(c *gin.Context) {
+	var in struct {
+		Email       string `json:"email"`
+		NewPassword string `json:"new_password"`
+	}
+	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Email) == "" || len(in.NewPassword) < 8 {
+		c.JSON(400, err("valid email and new password (min 8 chars) are required"))
+		return
+	}
+	var u models.User
+	cleanEmail := strings.ToLower(strings.TrimSpace(in.Email))
+	if e := s.db.Where("email = ?", cleanEmail).First(&u).Error; e != nil {
+		c.JSON(404, err("no user found with that email address"))
+		return
+	}
+	hash, e := s.authService.Hash(in.NewPassword)
+	if e != nil {
+		c.JSON(500, err("password hashing failed"))
+		return
+	}
+	u.PasswordHash = hash
+	if e := s.db.Save(&u).Error; e != nil {
+		c.JSON(500, err("failed to reset password"))
+		return
+	}
+	c.JSON(200, gin.H{"success": true, "message": "password reset successfully"})
+}
+
+func (s *Server) ChangePassword(c *gin.Context) {
+	uid := mustUUID(auth.UserID(c))
+	var in struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if c.BindJSON(&in) != nil || in.CurrentPassword == "" || len(in.NewPassword) < 8 {
+		c.JSON(400, err("current password and new password (min 8 chars) are required"))
+		return
+	}
+	var u models.User
+	if e := s.db.First(&u, uid).Error; e != nil {
+		c.JSON(404, err("user not found"))
+		return
+	}
+	if !s.authService.Check(u.PasswordHash, in.CurrentPassword) {
+		c.JSON(400, err("current password is incorrect"))
+		return
+	}
+	hash, e := s.authService.Hash(in.NewPassword)
+	if e != nil {
+		c.JSON(500, err("password hashing failed"))
+		return
+	}
+	u.PasswordHash = hash
+	if e := s.db.Save(&u).Error; e != nil {
+		c.JSON(500, err("failed to update password"))
+		return
+	}
+	c.JSON(200, gin.H{"success": true, "message": "password updated successfully"})
+}

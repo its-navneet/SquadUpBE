@@ -41,6 +41,36 @@ func (s *Server) computeCareerStats(u *models.User) *models.CareerStats {
 	return cs
 }
 
+func (s *Server) populateAthleteRatings(u *models.User) {
+	var count int64
+	var avg float64
+	s.db.Model(&models.PlayerRating{}).Where("rated_user_id = ?", u.ID).Count(&count)
+	if count > 0 {
+		s.db.Model(&models.PlayerRating{}).Where("rated_user_id = ?", u.ID).Select("COALESCE(AVG(overall),0)").Scan(&avg)
+		u.OverallRating = math.Round(avg*10) / 10
+		u.RatingsCount = int(count)
+
+		type attrAvg struct {
+			Attribute string  `gorm:"column:attribute"`
+			AvgValue  float64 `gorm:"column:avg_value"`
+		}
+		var res []attrAvg
+		err := s.db.Table("player_rating_attributes").
+			Joins("JOIN player_ratings ON player_ratings.id = player_rating_attributes.player_rating_id").
+			Where("player_ratings.rated_user_id = ?", u.ID).
+			Select("player_rating_attributes.attribute, AVG(player_rating_attributes.value) as avg_value").
+			Group("player_rating_attributes.attribute").
+			Scan(&res).Error
+		if err == nil && len(res) > 0 {
+			attrs := make(map[string]float64)
+			for _, r := range res {
+				attrs[r.Attribute] = math.Round(r.AvgValue*10) / 10
+			}
+			u.SkillAttributes = attrs
+		}
+	}
+}
+
 func (s *Server) GetMe(c *gin.Context) {
 	uid := mustUUID(auth.UserID(c))
 	var u models.User
@@ -49,6 +79,7 @@ func (s *Server) GetMe(c *gin.Context) {
 		return
 	}
 	u.CareerStats = s.computeCareerStats(&u)
+	s.populateAthleteRatings(&u)
 	c.JSON(200, gin.H{"success": true, "data": u})
 }
 
@@ -64,6 +95,7 @@ func (s *Server) GetUser(c *gin.Context) {
 		return
 	}
 	u.CareerStats = s.computeCareerStats(&u)
+	s.populateAthleteRatings(&u)
 	c.JSON(200, gin.H{"success": true, "data": u})
 }
 
@@ -233,6 +265,7 @@ func (s *Server) UpdateMe(c *gin.Context) {
 		}
 	}
 	u.CareerStats = s.computeCareerStats(&u)
+	s.populateAthleteRatings(&u)
 	c.JSON(200, gin.H{"success": true, "data": u})
 }
 
