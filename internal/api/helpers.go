@@ -79,11 +79,12 @@ func notifyGroupMembers(db *gorm.DB, groupID uuid.UUID, excludeUserID *uuid.UUID
 	if excludeUserID != nil && *excludeUserID != uuid.Nil {
 		q = q.Where("user_id != ?", *excludeUserID)
 	}
-	if err := q.Find(&members).Error; err != nil {
+	if err := q.Find(&members).Error; err != nil || len(members) == 0 {
 		return
 	}
-	for _, mem := range members {
-		n := models.Notification{
+	notifications := make([]models.Notification, len(members))
+	for i, mem := range members {
+		notifications[i] = models.Notification{
 			UserID:     mem.UserID,
 			GroupID:    &groupID,
 			Type:       notifType,
@@ -92,8 +93,8 @@ func notifyGroupMembers(db *gorm.DB, groupID uuid.UUID, excludeUserID *uuid.UUID
 			EntityType: entityType,
 			EntityID:   entityID,
 		}
-		db.Create(&n)
 	}
+	_ = db.Create(&notifications)
 }
 
 func cleanStoredURL(raw string) string {
@@ -108,4 +109,3 @@ func cleanStoredURL(raw string) string {
 	}
 	return raw
 }
-

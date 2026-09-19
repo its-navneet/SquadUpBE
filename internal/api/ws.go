@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"squadup/backend/internal/auth"
 	"squadup/backend/internal/models"
@@ -12,6 +13,61 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
+
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+const (
+	wsWriteWait  = 5 * time.Second
+	wsPongWait   = 60 * time.Second
+	wsPingPeriod = (wsPongWait * 9) / 10
+	wsMaxMsgSize = 65536
+)
+
+func setupClientHeartbeat(cl *ws.Client) func() {
+	conn := cl.Conn
+	conn.SetReadLimit(wsMaxMsgSize)
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
+
+	ticker := time.NewTicker(wsPingPeriod)
+	done := make(chan struct{})
+
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				cl.Mu.Lock()
+				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				cl.Mu.Unlock()
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	return func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+	}
+}
 
 func (s *Server) GetOnlinePresence(c *gin.Context) {
 	c.JSON(200, gin.H{
@@ -28,12 +84,14 @@ func (s *Server) PresenceWS(c *gin.Context) {
 		c.AbortWithStatus(401)
 		return
 	}
-	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	conn, e := up.Upgrade(c.Writer, c.Request, nil)
+	conn, e := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if e != nil {
 		return
 	}
 	cl := &ws.Client{Conn: conn, Key: "presence", UserID: uid.String()}
+	stopHeartbeat := setupClientHeartbeat(cl)
+	defer stopHeartbeat()
+
 	s.hub.Add(cl)
 	defer s.hub.Remove(cl)
 
@@ -51,6 +109,7 @@ func (s *Server) PresenceWS(c *gin.Context) {
 		Data: gin.H{"online_user_ids": s.presence.OnlineUserIDs()},
 	})
 	cl.Mu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 	_ = conn.WriteMessage(websocket.TextMessage, syncData)
 	cl.Mu.Unlock()
 
@@ -78,12 +137,14 @@ func (s *Server) GroupWS(c *gin.Context) {
 		c.AbortWithStatus(403)
 		return
 	}
-	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	conn, e := up.Upgrade(c.Writer, c.Request, nil)
+	conn, e := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if e != nil {
 		return
 	}
 	cl := &ws.Client{Conn: conn, Key: gid.String(), UserID: uid.String()}
+	stopHeartbeat := setupClientHeartbeat(cl)
+	defer stopHeartbeat()
+
 	s.hub.Add(cl)
 	defer s.hub.Remove(cl)
 
@@ -143,12 +204,14 @@ func (s *Server) MatchWS(c *gin.Context) {
 		c.AbortWithStatus(403)
 		return
 	}
-	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	conn, e := up.Upgrade(c.Writer, c.Request, nil)
+	conn, e := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if e != nil {
 		return
 	}
 	cl := &ws.Client{Conn: conn, Key: m.ID.String(), UserID: uid.String()}
+	stopHeartbeat := setupClientHeartbeat(cl)
+	defer stopHeartbeat()
+
 	s.hub.Add(cl)
 	defer s.hub.Remove(cl)
 	for {
@@ -157,4 +220,3 @@ func (s *Server) MatchWS(c *gin.Context) {
 		}
 	}
 }
-

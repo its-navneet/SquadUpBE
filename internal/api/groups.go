@@ -49,7 +49,6 @@ func (s *Server) ListGroups(c *gin.Context) {
 	uid := mustUUID(auth.UserID(c))
 	var gsx []models.Group
 	s.db.Joins("JOIN group_members gm ON gm.group_id=groups.id").Where("gm.user_id=? AND gm.status='ACTIVE'", uid).Order("groups.created_at DESC").Find(&gsx)
-	log.Println("/groups>>>>", gsx)
 	c.JSON(200, gin.H{"success": true, "data": gsx})
 }
 

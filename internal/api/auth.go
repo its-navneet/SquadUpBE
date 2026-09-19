@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/mail"
 	"strings"
 
 	"squadup/backend/internal/auth"
@@ -43,8 +44,17 @@ func (s *Server) Register(c *gin.Context) {
 		Position           string  `json:"position"`
 		KitNumber          int     `json:"kit_number"`
 	}
-	if c.BindJSON(&in) != nil || in.Name == "" || len(in.Password) < 8 {
-		c.JSON(400, err("name/email/password(8+) required"))
+	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" || len(in.Password) < 8 {
+		c.JSON(400, err("name and password (min 8 characters) are required"))
+		return
+	}
+	cleanEmail := strings.ToLower(strings.TrimSpace(in.Email))
+	if cleanEmail == "" {
+		c.JSON(400, err("email is required"))
+		return
+	}
+	if _, mailErr := mail.ParseAddress(cleanEmail); mailErr != nil || !strings.Contains(cleanEmail, ".") {
+		c.JSON(400, err("invalid email address format"))
 		return
 	}
 	hash, e := s.authService.Hash(in.Password)
@@ -117,8 +127,8 @@ func (s *Server) Register(c *gin.Context) {
 
 func (s *Server) Login(c *gin.Context) {
 	var in struct{ Email, Password string }
-	if c.BindJSON(&in) != nil {
-		c.JSON(400, err("invalid request"))
+	if c.BindJSON(&in) != nil || strings.TrimSpace(in.Email) == "" || in.Password == "" {
+		c.JSON(400, err("email and password are required"))
 		return
 	}
 	var u models.User

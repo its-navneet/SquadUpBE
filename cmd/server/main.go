@@ -4,6 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"squadup/backend/internal/api"
@@ -121,8 +124,40 @@ func main() {
 
 	r := srv.SetupRouter()
 
-	log.Printf("SquadUp listening on :%s", cfg.Port)
-	// Bind explicitly to IPv4 so physical devices can reach the server through
-	// the Mac's LAN address (for example, 192.168.x.x).
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+cfg.Port, r))
+	httpServer := &http.Server{
+		Addr:              "0.0.0.0:" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
+	}
+
+	// Channel to listen for interrupt signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		log.Printf("SquadUp listening on :%s", cfg.Port)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	<-sigChan
+	log.Println("[Server] Graceful shutdown initiated...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Server] Forced server shutdown: %v", err)
+	}
+
+	if sqlDB, err := db.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+
+	log.Println("[Server] SquadUp server stopped cleanly")
 }

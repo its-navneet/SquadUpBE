@@ -130,8 +130,11 @@ func (h *Hub) broadcastLocal(key string, e Event) {
 	for _, c := range cs {
 		c.Mu.Lock()
 		_ = c.Conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-		_ = c.Conn.WriteMessage(websocket.TextMessage, b)
+		writeErr := c.Conn.WriteMessage(websocket.TextMessage, b)
 		c.Mu.Unlock()
+		if writeErr != nil {
+			_ = c.Conn.Close()
+		}
 	}
 }
 

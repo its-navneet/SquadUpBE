@@ -1,7 +1,9 @@
 package config
 
 import (
+	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -45,40 +47,20 @@ func parseInt(val string, def int) int {
 	if val == "" {
 		return def
 	}
-	var n int
-	for _, ch := range val {
-		if ch < '0' || ch > '9' {
-			return def
-		}
-		n = n*10 + int(ch-'0')
+	if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+		return n
 	}
-	return n
+	return def
 }
 
 func parseFloat(val string, def float64) float64 {
 	if val == "" {
 		return def
 	}
-	var n float64
-	var dec float64
-	var inDec bool
-	decDiv := 1.0
-	for _, ch := range val {
-		if ch == '.' {
-			inDec = true
-			continue
-		}
-		if ch < '0' || ch > '9' {
-			return def
-		}
-		if inDec {
-			decDiv *= 10
-			dec = dec*10 + float64(ch-'0')
-		} else {
-			n = n*10 + float64(ch-'0')
-		}
+	if n, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil {
+		return n
 	}
-	return n + (dec / decDiv)
+	return def
 }
 
 func loadEnvFile(path string) {
@@ -166,6 +148,9 @@ func Load() Config {
 	}
 	if c.JWTSecret == "" {
 		c.JWTSecret = "SQUADUP"
+	}
+	if (os.Getenv("ENV") == "production" || os.Getenv("GIN_MODE") == "release") && (c.JWTSecret == "SQUADUP" || len(c.JWTSecret) < 16) {
+		log.Println("[WARNING] JWT_SECRET is set to default or is too short for a production environment! Please configure a strong, random 32+ char secret.")
 	}
 	if c.CORSOrigins == "" {
 		c.CORSOrigins = "*"
