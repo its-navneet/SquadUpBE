@@ -436,6 +436,44 @@ func (s *Server) StartMatch(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "data": o})
 }
 
+func (s *Server) PauseMatch(c *gin.Context) {
+	var m models.Match
+	if errVal := s.db.First(&m, mustUUID(c.Param("id"))).Error; errVal != nil {
+		c.JSON(404, err("match not found"))
+		return
+	}
+	if !mustAdmin(s.db, m.GroupID, mustUUID(auth.UserID(c))) {
+		c.JSON(403, err("admin only"))
+		return
+	}
+	o, e := s.matchService.Pause(m.ID)
+	if e != nil {
+		c.JSON(400, err(e.Error()))
+		return
+	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String())
+	c.JSON(200, gin.H{"success": true, "data": o})
+}
+
+func (s *Server) ResumeMatch(c *gin.Context) {
+	var m models.Match
+	if errVal := s.db.First(&m, mustUUID(c.Param("id"))).Error; errVal != nil {
+		c.JSON(404, err("match not found"))
+		return
+	}
+	if !mustAdmin(s.db, m.GroupID, mustUUID(auth.UserID(c))) {
+		c.JSON(403, err("admin only"))
+		return
+	}
+	o, e := s.matchService.Resume(m.ID)
+	if e != nil {
+		c.JSON(400, err(e.Error()))
+		return
+	}
+	_ = s.cache.Delete(c.Request.Context(), "squadup:cache:match:"+m.ID.String())
+	c.JSON(200, gin.H{"success": true, "data": o})
+}
+
 func (s *Server) FinishMatch(c *gin.Context) {
 	var m models.Match
 	s.db.First(&m, mustUUID(c.Param("id")))

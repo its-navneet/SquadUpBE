@@ -279,31 +279,34 @@ type Venue struct {
 type Match struct {
 	Base
 
-	GroupID           uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
-	SportID           uuid.UUID  `gorm:"type:uuid;index;not null" json:"sport_id"`
-	VenueID           *uuid.UUID `gorm:"type:uuid" json:"venue_id,omitempty"`
-	Venue             string     `json:"venue,omitempty"`
-	VenueMapURL       string     `json:"venue_map_url,omitempty"`
-	Name              string     `gorm:"not null" json:"name"`
-	ScheduledAt       time.Time  `gorm:"not null" json:"scheduled_at"`
-	DurationMinutes   int        `json:"duration_minutes"`
-	Format            string     `json:"format"`
-	TeamCount         int        `json:"team_count"`
-	PlayersPerTeam    int        `json:"players_per_team"`
-	MaxPlayers        int        `json:"max_players"`
-	Notes             string     `json:"notes,omitempty"`
-	Status            string     `gorm:"default:'UPCOMING'" json:"status"`
-	StartedAt         *time.Time `json:"started_at,omitempty"`
-	EndedAt           *time.Time `json:"ended_at,omitempty"`
-	FinalizedAt       *time.Time `json:"finalized_at,omitempty"`
-	TournamentType    string     `gorm:"default:'NONE'" json:"tournament_type,omitempty"`
-	MiniMatchDuration int        `json:"mini_match_duration,omitempty"`
-	DrawRule          string     `json:"draw_rule,omitempty"`
-	TotalMiniMatches  int        `json:"total_mini_matches,omitempty"`
-	BreakMinutes      int        `gorm:"default:5" json:"break_minutes,omitempty"`
-	PosterURL         string     `json:"poster_url,omitempty"`
-	PosterBucket      string     `json:"poster_bucket,omitempty"`
-	PosterKey         string     `json:"poster_key,omitempty"`
+	GroupID            uuid.UUID  `gorm:"type:uuid;index;not null" json:"group_id"`
+	SportID            uuid.UUID  `gorm:"type:uuid;index;not null" json:"sport_id"`
+	VenueID            *uuid.UUID `gorm:"type:uuid" json:"venue_id,omitempty"`
+	Venue              string     `json:"venue,omitempty"`
+	VenueMapURL        string     `json:"venue_map_url,omitempty"`
+	Name               string     `gorm:"not null" json:"name"`
+	ScheduledAt        time.Time  `gorm:"not null" json:"scheduled_at"`
+	DurationMinutes    int        `json:"duration_minutes"`
+	Format             string     `json:"format"`
+	TeamCount          int        `json:"team_count"`
+	PlayersPerTeam     int        `json:"players_per_team"`
+	MaxPlayers         int        `json:"max_players"`
+	Notes              string     `json:"notes,omitempty"`
+	Status             string     `gorm:"default:'UPCOMING'" json:"status"`
+	StartedAt          *time.Time `json:"started_at,omitempty"`
+	EndedAt            *time.Time `json:"ended_at,omitempty"`
+	FinalizedAt        *time.Time `json:"finalized_at,omitempty"`
+	TournamentType     string     `gorm:"default:'NONE'" json:"tournament_type,omitempty"`
+	MiniMatchDuration  int        `json:"mini_match_duration,omitempty"`
+	DrawRule           string     `json:"draw_rule,omitempty"`
+	TotalMiniMatches   int        `json:"total_mini_matches,omitempty"`
+	BreakMinutes       int        `gorm:"default:5" json:"break_minutes,omitempty"`
+	PosterURL          string     `json:"poster_url,omitempty"`
+	PosterBucket       string     `json:"poster_bucket,omitempty"`
+	PosterKey          string     `json:"poster_key,omitempty"`
+	IsPaused           bool       `gorm:"default:false" json:"is_paused"`
+	PausedAt           *time.Time `json:"paused_at,omitempty"`
+	TotalPausedSeconds int        `gorm:"default:0" json:"total_paused_seconds"`
 }
 
 func (m Match) MarshalJSON() ([]byte, error) {

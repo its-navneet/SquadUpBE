@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -185,5 +186,60 @@ func TestUpsertUserRatingPayloadBinding(t *testing.T) {
 	}
 	if inCamel.RatedUserIDCamel != "b11a9172-8d76-4d2b-9366-0775e7a9b011" {
 		t.Errorf("expected ratedUserId to be populated, got '%s'", inCamel.RatedUserIDCamel)
+	}
+}
+
+func TestMatchPauseResumeFields(t *testing.T) {
+	now := time.Now()
+	m := models.Match{
+		Name:               "Weekend Derby",
+		Status:             "LIVE",
+		StartedAt:          &now,
+		IsPaused:           true,
+		PausedAt:           &now,
+		TotalPausedSeconds: 120,
+	}
+
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("failed to marshal match: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if res["is_paused"] != true {
+		t.Errorf("expected is_paused true, got %v", res["is_paused"])
+	}
+	if res["total_paused_seconds"] != float64(120) {
+		t.Errorf("expected total_paused_seconds 120, got %v", res["total_paused_seconds"])
+	}
+	if res["paused_at"] == nil {
+		t.Error("expected non-nil paused_at")
+	}
+
+	// Test auth requirement for pause and resume routes
+	cfg := &config.Config{
+		CORSOrigins: "*",
+		JWTSecret:   "test-secret-at-least-32-bytes-long!!",
+	}
+	server := NewServer(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	r := server.SetupRouter()
+	mid := uuid.New().String()
+
+	reqPause, _ := http.NewRequest(http.MethodPost, "/api/matches/"+mid+"/pause", nil)
+	wPause := httptest.NewRecorder()
+	r.ServeHTTP(wPause, reqPause)
+	if wPause.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated pause, got %d", wPause.Code)
+	}
+
+	reqResume, _ := http.NewRequest(http.MethodPost, "/api/matches/"+mid+"/resume", nil)
+	wResume := httptest.NewRecorder()
+	r.ServeHTTP(wResume, reqResume)
+	if wResume.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated resume, got %d", wResume.Code)
 	}
 }

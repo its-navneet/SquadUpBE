@@ -48,13 +48,76 @@ func (s *Service) transition(id uuid.UUID, status string) (models.Match, error) 
 				return errors.New("generate at least two teams before starting")
 			}
 			m.StartedAt = &now
+			m.IsPaused = false
+			m.PausedAt = nil
+			m.TotalPausedSeconds = 0
 		} else {
 			if m.Status != "LIVE" {
 				return ErrInvalidState
 			}
+			if m.IsPaused && m.PausedAt != nil {
+				pausedDuration := int(now.Sub(*m.PausedAt).Seconds())
+				if pausedDuration > 0 {
+					m.TotalPausedSeconds += pausedDuration
+				}
+				m.IsPaused = false
+				m.PausedAt = nil
+			}
 			m.EndedAt = &now
 		}
 		m.Status = status
+		return tx.Save(&m).Error
+	})
+	if err == nil {
+		s.broadcast(id, "MATCH_STATUS_CHANGED", m)
+	}
+	return m, err
+}
+
+func (s *Service) Pause(id uuid.UUID) (models.Match, error) {
+	var m models.Match
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&m, id).Error; err != nil {
+			return err
+		}
+		if m.Status != "LIVE" {
+			return ErrInvalidState
+		}
+		if m.IsPaused {
+			return nil
+		}
+		now := time.Now()
+		m.IsPaused = true
+		m.PausedAt = &now
+		return tx.Save(&m).Error
+	})
+	if err == nil {
+		s.broadcast(id, "MATCH_STATUS_CHANGED", m)
+	}
+	return m, err
+}
+
+func (s *Service) Resume(id uuid.UUID) (models.Match, error) {
+	var m models.Match
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&m, id).Error; err != nil {
+			return err
+		}
+		if m.Status != "LIVE" {
+			return ErrInvalidState
+		}
+		if !m.IsPaused {
+			return nil
+		}
+		now := time.Now()
+		if m.PausedAt != nil {
+			pausedDuration := int(now.Sub(*m.PausedAt).Seconds())
+			if pausedDuration > 0 {
+				m.TotalPausedSeconds += pausedDuration
+			}
+		}
+		m.IsPaused = false
+		m.PausedAt = nil
 		return tx.Save(&m).Error
 	})
 	if err == nil {
