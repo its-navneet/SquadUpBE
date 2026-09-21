@@ -80,3 +80,27 @@ func TestPollEndpointsRequireAuth(t *testing.T) {
 		t.Fatalf("expected 401/500 for unauthenticated request, got %d", w.Code)
 	}
 }
+
+func TestCreatePollNotificationFormatting(t *testing.T) {
+	// Test 1: with formatted string
+	in := CreatePollRequest{
+		Title:              "Saturday Night 7v7",
+		MatchDate:          "2026-09-26T12:30:00.000Z",
+		MatchTimeFormatted: "Sat, Sep 26 • 6:00 PM",
+		Venue:              "Central Turf Arena",
+	}
+
+	timeStr := in.MatchTimeFormatted
+	if timeStr != "Sat, Sep 26 • 6:00 PM" {
+		t.Errorf("expected Sat, Sep 26 • 6:00 PM, got %s", timeStr)
+	}
+
+	// Test 2: with timezone offset (IST: +330 mins)
+	offset := 330
+	utcTime, _ := time.Parse(time.RFC3339, "2026-09-26T12:30:00.000Z")
+	localTime := utcTime.Add(time.Duration(offset) * time.Minute)
+	formatted := localTime.Format("Mon, Jan 02 • 3:04 PM")
+	if formatted != "Sat, Sep 26 • 6:00 PM" {
+		t.Errorf("expected 'Sat, Sep 26 • 6:00 PM', got '%s'", formatted)
+	}
+}

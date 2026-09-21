@@ -60,3 +60,35 @@ func TestPresenceTracker(t *testing.T) {
 		t.Errorf("expected false when disconnecting unknown user")
 	}
 }
+
+func TestPresenceTracker_ForceOffline(t *testing.T) {
+	tracker := NewPresenceTracker()
+	tracker.Connect("user-1")
+	tracker.Connect("user-1") // multiple connections (e.g. fast reconnects)
+	if !tracker.IsOnline("user-1") {
+		t.Fatalf("expected user-1 to be online")
+	}
+
+	wasOnline := tracker.ForceOffline("user-1")
+	if !wasOnline {
+		t.Errorf("expected wasOnline to be true")
+	}
+	if tracker.IsOnline("user-1") {
+		t.Errorf("expected user-1 to be offline immediately after ForceOffline")
+	}
+	if len(tracker.OnlineUserIDs()) != 0 {
+		t.Errorf("expected 0 online users, got %d", len(tracker.OnlineUserIDs()))
+	}
+
+	// ForceOffline on already offline user
+	if tracker.ForceOffline("user-1") {
+		t.Errorf("expected false when forcing offline for user who is already offline")
+	}
+}
+
+func TestPresenceTracker_Touch(t *testing.T) {
+	tracker := NewPresenceTracker()
+	// Touch without redis should safely no-op without panic
+	tracker.Touch("user-1")
+	tracker.Touch("")
+}

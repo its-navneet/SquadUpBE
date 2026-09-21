@@ -24,17 +24,22 @@ var wsUpgrader = websocket.Upgrader{
 
 const (
 	wsWriteWait  = 5 * time.Second
-	wsPongWait   = 60 * time.Second
-	wsPingPeriod = (wsPongWait * 9) / 10
+	wsPongWait   = 25 * time.Second
+	wsPingPeriod = 20 * time.Second
 	wsMaxMsgSize = 65536
 )
 
-func setupClientHeartbeat(cl *ws.Client) func() {
+func setupClientHeartbeat(cl *ws.Client, onPong ...func()) func() {
 	conn := cl.Conn
 	conn.SetReadLimit(wsMaxMsgSize)
 	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	conn.SetPongHandler(func(string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		for _, fn := range onPong {
+			if fn != nil {
+				fn()
+			}
+		}
 		return nil
 	})
 
@@ -78,6 +83,22 @@ func (s *Server) GetOnlinePresence(c *gin.Context) {
 	})
 }
 
+func (s *Server) SetOffline(c *gin.Context) {
+	uid := mustUUID(auth.UserID(c))
+	if uid == uuid.Nil {
+		c.AbortWithStatus(401)
+		return
+	}
+	wasOnline := s.presence.ForceOffline(uid.String())
+	if wasOnline {
+		s.hub.Broadcast("presence", ws.Event{
+			Type: "USER_OFFLINE",
+			Data: gin.H{"user_id": uid.String()},
+		})
+	}
+	c.JSON(200, gin.H{"success": true})
+}
+
 func (s *Server) PresenceWS(c *gin.Context) {
 	uid := mustUUID(auth.UserID(c))
 	if uid == uuid.Nil {
@@ -89,7 +110,9 @@ func (s *Server) PresenceWS(c *gin.Context) {
 		return
 	}
 	cl := &ws.Client{Conn: conn, Key: "presence", UserID: uid.String()}
-	stopHeartbeat := setupClientHeartbeat(cl)
+	stopHeartbeat := setupClientHeartbeat(cl, func() {
+		s.presence.Touch(uid.String())
+	})
 	defer stopHeartbeat()
 
 	s.hub.Add(cl)
@@ -124,7 +147,14 @@ func (s *Server) PresenceWS(c *gin.Context) {
 	}()
 
 	for {
-		if _, _, e := conn.ReadMessage(); e != nil {
+		_, raw, e := conn.ReadMessage()
+		if e != nil {
+			return
+		}
+		var in struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &in) == nil && (in.Type == "OFFLINE" || in.Type == "USER_OFFLINE") {
 			return
 		}
 	}
@@ -147,23 +177,6 @@ func (s *Server) GroupWS(c *gin.Context) {
 
 	s.hub.Add(cl)
 	defer s.hub.Remove(cl)
-
-	justCameOnline := s.presence.Connect(uid.String())
-	if justCameOnline {
-		s.hub.Broadcast("presence", ws.Event{
-			Type: "USER_ONLINE",
-			Data: gin.H{"user_id": uid.String()},
-		})
-	}
-	defer func() {
-		justWentOffline := s.presence.Disconnect(uid.String())
-		if justWentOffline {
-			s.hub.Broadcast("presence", ws.Event{
-				Type: "USER_OFFLINE",
-				Data: gin.H{"user_id": uid.String()},
-			})
-		}
-	}()
 
 	for {
 		_, raw, e := conn.ReadMessage()

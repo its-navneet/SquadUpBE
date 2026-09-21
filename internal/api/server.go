@@ -218,6 +218,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 
 	// WebSockets & Presence
 	sec.GET("/presence/online", s.GetOnlinePresence)
+	sec.POST("/presence/offline", s.SetOffline)
 	sec.GET("/ws/presence", s.PresenceWS)
 	sec.GET("/ws/groups/:id", s.GroupWS)
 	sec.GET("/ws/matches/:id", s.MatchWS)

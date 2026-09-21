@@ -13,11 +13,13 @@ import (
 )
 
 type CreatePollRequest struct {
-	Title           string `json:"title"`
-	MatchDate       string `json:"match_date"`
-	DurationMinutes int    `json:"duration_minutes"`
-	Venue           string `json:"venue"`
-	ExpiresAt       string `json:"expires_at"`
+	Title                 string `json:"title"`
+	MatchDate             string `json:"match_date"`
+	MatchTimeFormatted    string `json:"match_time_formatted"`
+	TimezoneOffsetMinutes *int   `json:"timezone_offset_minutes"`
+	DurationMinutes       int    `json:"duration_minutes"`
+	Venue                 string `json:"venue"`
+	ExpiresAt             string `json:"expires_at"`
 }
 
 type VotePollRequest struct {
@@ -134,9 +136,27 @@ func (s *Server) CreatePoll(c *gin.Context) {
 		creatorName = creator.Name
 	}
 
-	formattedMatchTime := matchTime.Format("Mon, Jan 02 • 15:04")
+	formattedMatchTime := strings.TrimSpace(in.MatchTimeFormatted)
+	if formattedMatchTime == "" {
+		displayTime := matchTime
+		if in.TimezoneOffsetMinutes != nil {
+			displayTime = matchTime.Add(time.Duration(*in.TimezoneOffsetMinutes) * time.Minute)
+		}
+		formattedMatchTime = displayTime.Format("Mon, Jan 02 • 3:04 PM")
+	}
+
+	venuePart := ""
+	if strings.TrimSpace(in.Venue) != "" {
+		venuePart = fmt.Sprintf(" at %s", strings.TrimSpace(in.Venue))
+	}
+
 	notifTitle := fmt.Sprintf("Match Poll: %s", g.Name)
-	notifMsg := fmt.Sprintf("%s asked: Are you in for match on %s? Vote now!", creatorName, formattedMatchTime)
+	var notifMsg string
+	if title != "" && title != "Match Availability" {
+		notifMsg = fmt.Sprintf("%s started a poll: %s (%s%s). Vote now!", creatorName, title, formattedMatchTime, venuePart)
+	} else {
+		notifMsg = fmt.Sprintf("%s asked: Are you in for match on %s%s? Vote now!", creatorName, formattedMatchTime, venuePart)
+	}
 
 	notifyGroupMembers(s.db, gid, &uid, "MATCH_POLL_CREATED", notifTitle, notifMsg, "POLL", &poll.ID)
 

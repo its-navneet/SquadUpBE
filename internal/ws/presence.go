@@ -121,6 +121,44 @@ func (p *PresenceTracker) IsOnline(userID string) bool {
 	return false
 }
 
+// Touch refreshes the TTL of an active user's presence key in Redis.
+func (p *PresenceTracker) Touch(userID string) {
+	if userID == "" {
+		return
+	}
+	p.mu.RLock()
+	rc := p.redisClient
+	p.mu.RUnlock()
+
+	if rc != nil && rc.IsAvailable() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		_ = rc.Set(ctx, redisPresenceKey+userID, "1", presenceTTL)
+		_ = rc.SAdd(ctx, redisOnlineSet, userID)
+	}
+}
+
+// ForceOffline immediately marks a user offline, removing all active connection counts.
+// Returns true if the user was previously online.
+func (p *PresenceTracker) ForceOffline(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	count, exists := p.connections[userID]
+	delete(p.connections, userID)
+
+	if p.redisClient != nil && p.redisClient.IsAvailable() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		_ = p.redisClient.Del(ctx, redisPresenceKey+userID)
+		_ = p.redisClient.SRem(ctx, redisOnlineSet, userID)
+	}
+
+	return exists && count > 0
+}
+
 // OnlineUserIDs returns a list of all currently online user IDs.
 func (p *PresenceTracker) OnlineUserIDs() []string {
 	p.mu.RLock()
@@ -129,11 +167,24 @@ func (p *PresenceTracker) OnlineUserIDs() []string {
 	p.mu.RUnlock()
 
 	if rc != nil && rc.IsAvailable() {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		members, err := rc.SMembers(ctx, redisOnlineSet)
-		if err == nil && len(members) > 0 {
-			return members
+		if err == nil {
+			active := make([]string, 0, len(members))
+			var stale []any
+			for _, m := range members {
+				exists, e := rc.Exists(ctx, redisPresenceKey+m)
+				if e == nil && exists {
+					active = append(active, m)
+				} else {
+					stale = append(stale, m)
+				}
+			}
+			if len(stale) > 0 {
+				_ = rc.SRem(ctx, redisOnlineSet, stale...)
+			}
+			return active
 		}
 	}
 

@@ -43,23 +43,25 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		return
 	}
 	var in struct {
-		Name              string `json:"name"`
-		ScheduledAt       string `json:"scheduled_at"`
-		VenueID           string `json:"venue_id"`
-		Venue             string `json:"venue"`
-		VenueMapURL       string `json:"venue_map_url"`
-		Format            string `json:"format"`
-		Notes             string `json:"notes"`
-		DurationMinutes   int    `json:"duration_minutes"`
-		TeamCount         int    `json:"team_count"`
-		PlayersPerTeam    int    `json:"players_per_team"`
-		MaxPlayers        int    `json:"max_players"`
-		PollID            string `json:"poll_id"`
-		TournamentType    string `json:"tournament_type"`
-		MiniMatchDuration int    `json:"mini_match_duration"`
-		DrawRule          string `json:"draw_rule"`
-		TotalMiniMatches  int    `json:"total_mini_matches"`
-		BreakMinutes      int    `json:"break_minutes"`
+		Name                   string `json:"name"`
+		ScheduledAt            string `json:"scheduled_at"`
+		VenueID                string `json:"venue_id"`
+		Venue                  string `json:"venue"`
+		VenueMapURL            string `json:"venue_map_url"`
+		Format                 string `json:"format"`
+		Notes                  string `json:"notes"`
+		DurationMinutes        int    `json:"duration_minutes"`
+		TeamCount              int    `json:"team_count"`
+		PlayersPerTeam         int    `json:"players_per_team"`
+		MaxPlayers             int    `json:"max_players"`
+		PollID                 string `json:"poll_id"`
+		ScheduledTimeFormatted string `json:"scheduled_time_formatted"`
+		TimezoneOffsetMinutes  *int   `json:"timezone_offset_minutes"`
+		TournamentType         string `json:"tournament_type"`
+		MiniMatchDuration      int    `json:"mini_match_duration"`
+		DrawRule               string `json:"draw_rule"`
+		TotalMiniMatches       int    `json:"total_mini_matches"`
+		BreakMinutes           int    `json:"break_minutes"`
 	}
 	if c.BindJSON(&in) != nil || in.Name == "" {
 		c.JSON(400, err("match name required"))
@@ -172,8 +174,17 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		}
 	}
 
+	displayMatchTime := strings.TrimSpace(in.ScheduledTimeFormatted)
+	if displayMatchTime == "" {
+		dt := m.ScheduledAt
+		if in.TimezoneOffsetMinutes != nil {
+			dt = dt.Add(time.Duration(*in.TimezoneOffsetMinutes) * time.Minute)
+		}
+		displayMatchTime = dt.Format("Mon, Jan 02 • 3:04 PM")
+	}
+
 	schedulerID := mustUUID(auth.UserID(c))
-	notifyGroupMembers(s.db, gid, &schedulerID, "MATCH_SCHEDULED", "New Match Scheduled", fmt.Sprintf("'%s' has been scheduled for %s in %s. Check the lineup and RSVP!", m.Name, m.ScheduledAt.Format("Mon, Jan 02 • 15:04"), g.Name), "MATCH", &m.ID)
+	notifyGroupMembers(s.db, gid, &schedulerID, "MATCH_SCHEDULED", "New Match Scheduled", fmt.Sprintf("'%s' has been scheduled for %s in %s. Check the lineup and RSVP!", m.Name, displayMatchTime, g.Name), "MATCH", &m.ID)
 	c.JSON(201, gin.H{"success": true, "data": m})
 }
 
