@@ -415,19 +415,60 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 		st.AttendanceTotal = att.Total
 	}
 
+	matchIDs := make([]uuid.UUID, len(matches))
+	for i, m := range matches {
+		matchIDs[i] = m.ID
+	}
+
+	resultByMatchID := make(map[uuid.UUID]models.MatchResult)
+	eventsByMatchID := make(map[uuid.UUID][]models.MatchEvent)
+	teamsByMatchID := make(map[uuid.UUID][]models.Team)
+	membersByTeamID := make(map[uuid.UUID][]models.TeamMember)
+
+	if len(matchIDs) > 0 {
+		var allResults []models.MatchResult
+		if err := tx.Where("match_id IN ?", matchIDs).Find(&allResults).Error; err == nil {
+			for _, r := range allResults {
+				resultByMatchID[r.MatchID] = r
+			}
+		}
+
+		var allEvents []models.MatchEvent
+		if err := tx.Where("match_id IN ?", matchIDs).Find(&allEvents).Error; err == nil {
+			for _, ev := range allEvents {
+				eventsByMatchID[ev.MatchID] = append(eventsByMatchID[ev.MatchID], ev)
+			}
+		}
+
+		var allTeams []models.Team
+		if err := tx.Where("match_id IN ?", matchIDs).Order("created_at ASC, id ASC").Find(&allTeams).Error; err == nil {
+			teamIDs := make([]uuid.UUID, len(allTeams))
+			for i, t := range allTeams {
+				teamsByMatchID[t.MatchID] = append(teamsByMatchID[t.MatchID], t)
+				teamIDs[i] = t.ID
+			}
+
+			if len(teamIDs) > 0 {
+				var allMembers []models.TeamMember
+				if err := tx.Where("team_id IN ?", teamIDs).Find(&allMembers).Error; err == nil {
+					for _, mem := range allMembers {
+						membersByTeamID[mem.TeamID] = append(membersByTeamID[mem.TeamID], mem)
+					}
+				}
+			}
+		}
+	}
+
 	for _, m := range matches {
-		var res models.MatchResult
-		if err := tx.Where("match_id = ?", m.ID).First(&res).Error; err != nil {
+		res, hasRes := resultByMatchID[m.ID]
+		if !hasRes {
 			continue
 		}
 		if res.MVPUserID != nil {
 			getStat(*res.MVPUserID).MVP++
 		}
 
-		var events []models.MatchEvent
-		if err := tx.Where("match_id = ?", m.ID).Find(&events).Error; err != nil {
-			continue
-		}
+		events := eventsByMatchID[m.ID]
 		for _, ev := range events {
 			switch ev.EventType {
 			case "GOAL":
@@ -456,14 +497,10 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 			}
 		}
 
-		var teams []models.Team
-		if err := tx.Where("match_id = ?", m.ID).Order("created_at ASC, id ASC").Find(&teams).Error; err != nil {
-			continue
-		}
+		teams := teamsByMatchID[m.ID]
 		if len(teams) == 2 {
-			var t0Members, t1Members []models.TeamMember
-			tx.Where("team_id = ?", teams[0].ID).Find(&t0Members)
-			tx.Where("team_id = ?", teams[1].ID).Find(&t1Members)
+			t0Members := membersByTeamID[teams[0].ID]
+			t1Members := membersByTeamID[teams[1].ID]
 
 			for _, mem := range t0Members {
 				st := getStat(mem.UserID)
@@ -516,8 +553,7 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 				}
 			}
 			for _, t := range teams {
-				var members []models.TeamMember
-				tx.Where("team_id = ?", t.ID).Find(&members)
+				members := membersByTeamID[t.ID]
 				sc := teamScores[t.ID]
 				isWinner := sc == maxScore && topCount == 1
 				isDraw := sc == maxScore && topCount > 1
@@ -539,8 +575,12 @@ func recalculateGroupStats(tx *gorm.DB, groupID uuid.UUID) error {
 	if err := tx.Where("group_id = ?", groupID).Delete(&models.PlayerStatistics{}).Error; err != nil {
 		return err
 	}
-	for _, st := range statsMap {
-		if err := tx.Create(st).Error; err != nil {
+	if len(statsMap) > 0 {
+		statsList := make([]*models.PlayerStatistics, 0, len(statsMap))
+		for _, st := range statsMap {
+			statsList = append(statsList, st)
+		}
+		if err := tx.Create(&statsList).Error; err != nil {
 			return err
 		}
 	}

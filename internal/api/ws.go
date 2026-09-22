@@ -178,6 +178,10 @@ func (s *Server) GroupWS(c *gin.Context) {
 	s.hub.Add(cl)
 	defer s.hub.Remove(cl)
 
+	var user models.User
+	s.db.Select("id, name").First(&user, uid)
+	userName := user.Name
+
 	for {
 		_, raw, e := conn.ReadMessage()
 		if e != nil {
@@ -192,13 +196,11 @@ func (s *Server) GroupWS(c *gin.Context) {
 			if in.Type == "TYPING_STOP" {
 				isTyping = false
 			}
-			var user models.User
-			s.db.Select("id, name").First(&user, uid)
 			s.hub.Broadcast(gid.String(), ws.Event{
 				Type: "USER_TYPING",
 				Data: gin.H{
 					"user_id":   uid.String(),
-					"user_name": user.Name,
+					"user_name": userName,
 					"is_typing": isTyping,
 				},
 			})

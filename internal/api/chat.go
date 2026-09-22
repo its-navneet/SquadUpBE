@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm/clause"
 )
 
 func (s *Server) GetChatMessages(c *gin.Context) {
@@ -94,21 +95,38 @@ func (s *Server) MarkChatRead(c *gin.Context) {
 		return
 	}
 
+	msgIDs := make([]uuid.UUID, len(msgs))
+	for i, m := range msgs {
+		msgIDs[i] = m.ID
+	}
+
+	var existingReadIDs []uuid.UUID
+	s.db.Model(&models.ChatMessageRead{}).
+		Where("user_id = ? AND message_id IN ?", uid, msgIDs).
+		Pluck("message_id", &existingReadIDs)
+
+	alreadyRead := make(map[uuid.UUID]bool, len(existingReadIDs))
+	for _, id := range existingReadIDs {
+		alreadyRead[id] = true
+	}
+
 	now := time.Now().UTC()
+	var toInsert []models.ChatMessageRead
 	var readIDs []uuid.UUID
 	for _, m := range msgs {
-		var existing models.ChatMessageRead
-		if s.db.Where("message_id=? AND user_id=?", m.ID, uid).First(&existing).Error != nil {
-			r := models.ChatMessageRead{
+		if !alreadyRead[m.ID] {
+			toInsert = append(toInsert, models.ChatMessageRead{
 				MessageID: m.ID,
 				UserID:    uid,
 				GroupID:   gid,
 				ReadAt:    now,
-			}
-			if s.db.Create(&r).Error == nil {
-				readIDs = append(readIDs, m.ID)
-			}
+			})
+			readIDs = append(readIDs, m.ID)
 		}
+	}
+
+	if len(toInsert) > 0 {
+		_ = s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&toInsert)
 	}
 
 	if len(readIDs) > 0 {

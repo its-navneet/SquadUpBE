@@ -21,21 +21,26 @@ func (s *Service) Upsert(g, rater, rated uuid.UUID, overall float64, attrs map[s
 	}
 	var p models.PlayerRating
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		var activeMembers []models.GroupMember
+		tx.Where("group_id = ? AND user_id IN ? AND (TRIM(UPPER(status))='ACTIVE' OR status='' OR status IS NULL)", g, []uuid.UUID{rater, rated}).Find(&activeMembers)
 		var a, b int64
-		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND (TRIM(UPPER(status))='ACTIVE' OR status='' OR status IS NULL)", g, rater).Count(&a)
-		tx.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND (TRIM(UPPER(status))='ACTIVE' OR status='' OR status IS NULL)", g, rated).Count(&b)
-		if a == 0 {
-			var ownerCount int64
-			tx.Model(&models.Group{}).Where("id=? AND owner_id=?", g, rater).Count(&ownerCount)
-			if ownerCount > 0 {
+		for _, m := range activeMembers {
+			if m.UserID == rater {
 				a = 1
 			}
-		}
-		if b == 0 {
-			var ownerCount int64
-			tx.Model(&models.Group{}).Where("id=? AND owner_id=?", g, rated).Count(&ownerCount)
-			if ownerCount > 0 {
+			if m.UserID == rated {
 				b = 1
+			}
+		}
+		if a == 0 || b == 0 {
+			var ownerGroup models.Group
+			if tx.Select("owner_id").First(&ownerGroup, g).Error == nil {
+				if ownerGroup.OwnerID == rater {
+					a = 1
+				}
+				if ownerGroup.OwnerID == rated {
+					b = 1
+				}
 			}
 		}
 		if a == 0 || b == 0 {
@@ -58,9 +63,12 @@ func (s *Service) Upsert(g, rater, rated uuid.UUID, overall float64, attrs map[s
 				return e
 			}
 		}
-		for k, v := range attrs {
-			attr := models.PlayerRatingAttribute{PlayerRatingID: p.ID, Attribute: k, Value: v}
-			if e := tx.Create(&attr).Error; e != nil {
+		if len(attrs) > 0 {
+			attrsList := make([]models.PlayerRatingAttribute, 0, len(attrs))
+			for k, v := range attrs {
+				attrsList = append(attrsList, models.PlayerRatingAttribute{PlayerRatingID: p.ID, Attribute: k, Value: v})
+			}
+			if e := tx.Create(&attrsList).Error; e != nil {
 				return e
 			}
 		}
@@ -69,15 +77,42 @@ func (s *Service) Upsert(g, rater, rated uuid.UUID, overall float64, attrs map[s
 	return p, err
 }
 func (s *Service) Average(g, u uuid.UUID) (float64, int64, error) {
-	var avg float64
-	var count int64
-	if e := s.DB.Model(&models.PlayerRating{}).Where("group_id=? AND rated_user_id=?", g, u).Select("COALESCE(AVG(overall),0)").Scan(&avg).Error; e != nil {
+	type ratingStats struct {
+		Avg   float64 `gorm:"column:avg"`
+		Count int64   `gorm:"column:count"`
+	}
+	var st ratingStats
+	if e := s.DB.Model(&models.PlayerRating{}).
+		Where("group_id=? AND rated_user_id=?", g, u).
+		Select("COALESCE(AVG(overall),0) as avg, COUNT(*) as count").
+		Scan(&st).Error; e != nil {
 		return 0, 0, e
 	}
-	if e := s.DB.Model(&models.PlayerRating{}).Where("group_id=? AND rated_user_id=?", g, u).Count(&count).Error; e != nil {
-		return 0, 0, e
+	return st.Avg, st.Count, nil
+}
+
+// BatchAverages fetches average ratings for multiple users in a single SQL query.
+func (s *Service) BatchAverages(g uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]float64, error) {
+	result := make(map[uuid.UUID]float64, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
 	}
-	return avg, count, nil
+	type row struct {
+		RatedUserID uuid.UUID `gorm:"column:rated_user_id"`
+		Avg         float64   `gorm:"column:avg"`
+	}
+	var rows []row
+	if err := s.DB.Model(&models.PlayerRating{}).
+		Where("group_id = ? AND rated_user_id IN ?", g, userIDs).
+		Select("rated_user_id, COALESCE(AVG(overall), 0) as avg").
+		Group("rated_user_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		result[r.RatedUserID] = r.Avg
+	}
+	return result, nil
 }
 
 func (s *Service) AverageWithAttributes(g, u uuid.UUID) (float64, int64, map[string]float64, error) {

@@ -469,17 +469,37 @@ func (s *Server) GetMyJoinRequests(c *gin.Context) {
 		GroupCity    string    `json:"group_city"`
 	}
 
+	groupIDs := make([]uuid.UUID, 0, len(requests))
+	for _, req := range requests {
+		groupIDs = append(groupIDs, req.GroupID)
+	}
+
+	activeMemberships := make(map[uuid.UUID]bool)
+	groupsMap := make(map[uuid.UUID]models.Group)
+	if len(groupIDs) > 0 {
+		var activeGroupIDs []uuid.UUID
+		s.db.Model(&models.GroupMember{}).
+			Where("user_id = ? AND group_id IN ? AND status = 'ACTIVE'", uid, groupIDs).
+			Pluck("group_id", &activeGroupIDs)
+		for _, gid := range activeGroupIDs {
+			activeMemberships[gid] = true
+		}
+
+		var groups []models.Group
+		s.db.Where("id IN ?", groupIDs).Find(&groups)
+		for _, g := range groups {
+			groupsMap[g.ID] = g
+		}
+	}
+
 	result := make([]JoinRequestWithGroup, 0, len(requests))
 	for _, req := range requests {
 		status := req.Status
-		var count int64
-		s.db.Model(&models.GroupMember{}).Where("group_id=? AND user_id=? AND status='ACTIVE'", req.GroupID, uid).Count(&count)
-		if count > 0 {
+		if activeMemberships[req.GroupID] {
 			status = "APPROVED"
 		}
 
-		var g models.Group
-		s.db.First(&g, req.GroupID)
+		g := groupsMap[req.GroupID]
 		result = append(result, JoinRequestWithGroup{
 			ID:           req.ID,
 			GroupID:      req.GroupID,

@@ -1,3 +1,24 @@
 -- Reference migration. V1 currently uses GORM AutoMigrate on startup.
 -- Create database separately:
 -- CREATE DATABASE squadup;
+
+-- High-performance composite and covering indexes created on startup:
+-- CREATE INDEX IF NOT EXISTS idx_group_members_group_status ON group_members (group_id, status);
+-- CREATE INDEX IF NOT EXISTS idx_group_members_user_status ON group_members (user_id, status);
+-- CREATE INDEX IF NOT EXISTS idx_chat_messages_group_created ON chat_messages (group_id, created_at ASC);
+-- CREATE INDEX IF NOT EXISTS idx_chat_messages_group_sender ON chat_messages (group_id, sender_id);
+-- CREATE INDEX IF NOT EXISTS idx_chat_message_reads_user_group ON chat_message_reads (user_id, group_id);
+-- CREATE INDEX IF NOT EXISTS idx_matches_group_scheduled ON matches (group_id, scheduled_at DESC);
+-- CREATE INDEX IF NOT EXISTS idx_matches_group_finalized ON matches (group_id, finalized_at);
+-- CREATE INDEX IF NOT EXISTS idx_matches_venue_id ON matches (venue_id);
+-- CREATE INDEX IF NOT EXISTS idx_attendances_match_status ON attendances (match_id, status);
+-- CREATE INDEX IF NOT EXISTS idx_match_events_match_time ON match_events (match_id, match_time_seconds ASC, created_at ASC);
+-- CREATE INDEX IF NOT EXISTS idx_player_ratings_group_rated ON player_ratings (group_id, rated_user_id);
+-- CREATE INDEX IF NOT EXISTS idx_player_ratings_rated_user ON player_ratings (rated_user_id);
+-- CREATE INDEX IF NOT EXISTS idx_player_rating_attrs_rating_attr ON player_rating_attributes (player_rating_id, attribute);
+-- CREATE INDEX IF NOT EXISTS idx_player_stats_leaderboard ON player_statistics (group_id, goals DESC, assists DESC, matches DESC);
+-- CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications (user_id, created_at DESC);
+-- CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications (user_id, read_at);
+-- CREATE INDEX IF NOT EXISTS idx_polls_group_expires ON polls (group_id, expires_at, created_at DESC);
+-- CREATE INDEX IF NOT EXISTS idx_mini_matches_match_game ON mini_matches (match_id, game_number ASC);
+-- CREATE INDEX IF NOT EXISTS idx_groups_lower_invite_code ON groups (LOWER(invite_code));

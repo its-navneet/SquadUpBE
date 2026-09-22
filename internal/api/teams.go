@@ -39,22 +39,37 @@ func loadMatchTeams(d *gorm.DB, matchID uuid.UUID) ([]gin.H, error) {
 		models.TeamMember
 		User *models.User `json:"user,omitempty"`
 	}
-	out := make([]gin.H, 0, len(ts))
-	for _, t := range ts {
-		var mem []models.TeamMember
-		d.Where("team_id=?", t.ID).Find(&mem)
-		uids := make([]uuid.UUID, 0, len(mem))
-		for _, m := range mem {
-			uids = append(uids, m.UserID)
-		}
+	if len(ts) == 0 {
+		return []gin.H{}, nil
+	}
+
+	teamIDs := make([]uuid.UUID, len(ts))
+	for i, t := range ts {
+		teamIDs[i] = t.ID
+	}
+
+	var allMembers []models.TeamMember
+	d.Where("team_id IN ?", teamIDs).Find(&allMembers)
+
+	userIDs := make([]uuid.UUID, 0, len(allMembers))
+	membersByTeam := make(map[uuid.UUID][]models.TeamMember, len(ts))
+	for _, m := range allMembers {
+		membersByTeam[m.TeamID] = append(membersByTeam[m.TeamID], m)
+		userIDs = append(userIDs, m.UserID)
+	}
+
+	uMap := make(map[uuid.UUID]models.User)
+	if len(userIDs) > 0 {
 		var users []models.User
-		if len(uids) > 0 {
-			d.Where("id IN ?", uids).Find(&users)
-		}
-		uMap := make(map[uuid.UUID]models.User, len(users))
+		d.Where("id IN ?", userIDs).Find(&users)
 		for _, u := range users {
 			uMap[u.ID] = u
 		}
+	}
+
+	out := make([]gin.H, 0, len(ts))
+	for _, t := range ts {
+		mem := membersByTeam[t.ID]
 		mList := make([]memberOut, 0, len(mem))
 		for _, m := range mem {
 			var uPtr *models.User
@@ -86,9 +101,14 @@ func (s *Server) recalcTeamStrength(tx *gorm.DB, teamID, groupID uuid.UUID) erro
 	if len(members) == 0 {
 		return tx.Model(&models.Team{}).Where("id = ?", teamID).Update("strength", 0.0).Error
 	}
+	userIDs := make([]uuid.UUID, len(members))
+	for i, m := range members {
+		userIDs[i] = m.UserID
+	}
+	ratingsMap, _ := s.ratingService.BatchAverages(groupID, userIDs)
 	var totalRating float64
 	for _, m := range members {
-		r, _, _ := s.ratingService.Average(groupID, m.UserID)
+		r := ratingsMap[m.UserID]
 		if r == 0 {
 			r = 5.0
 		}
@@ -152,10 +172,7 @@ func (s *Server) GenerateTeams(c *gin.Context) {
 		userMap[u.ID] = u
 	}
 
-	ratings := map[uuid.UUID]float64{}
-	for _, u := range us {
-		ratings[u.ID], _, _ = s.ratingService.Average(m.GroupID, u.ID)
-	}
+	ratings, _ := s.ratingService.BatchAverages(m.GroupID, ids)
 
 	ps := make([]team.Player, 0, len(ids))
 	for _, uid := range ids {
@@ -238,9 +255,9 @@ func (s *Server) GenerateTeams(c *gin.Context) {
 
 	// 4. Create newly generated teams
 	out := []models.Team{}
+	var allNewMembers []models.TeamMember
 
 	for i, p := range teams {
-
 		tm := models.Team{
 			MatchID:  mid,
 			Name:     teamName(i),
@@ -254,23 +271,23 @@ func (s *Server) GenerateTeams(c *gin.Context) {
 			return
 		}
 
-		// 5. Add players to the newly created team
 		for _, x := range p {
-
-			member := models.TeamMember{
+			allNewMembers = append(allNewMembers, models.TeamMember{
 				TeamID:       tm.ID,
 				UserID:       x.UserID,
 				PositionName: normalizePosition(x.Position),
-			}
-
-			if e := tx.Create(&member).Error; e != nil {
-				tx.Rollback()
-				c.JSON(500, err(e.Error()))
-				return
-			}
+			})
 		}
 
 		out = append(out, tm)
+	}
+
+	if len(allNewMembers) > 0 {
+		if e := tx.Create(&allNewMembers).Error; e != nil {
+			tx.Rollback()
+			c.JSON(500, err(e.Error()))
+			return
+		}
 	}
 
 	// 6. Commit
@@ -485,4 +502,3 @@ func (s *Server) SwapPlayers(c *gin.Context) {
 		"message": "Players swapped successfully",
 	})
 }
-

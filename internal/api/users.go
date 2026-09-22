@@ -42,13 +42,18 @@ func (s *Server) computeCareerStats(u *models.User) *models.CareerStats {
 }
 
 func (s *Server) populateAthleteRatings(u *models.User) {
-	var count int64
-	var avg float64
-	s.db.Model(&models.PlayerRating{}).Where("rated_user_id = ?", u.ID).Count(&count)
-	if count > 0 {
-		s.db.Model(&models.PlayerRating{}).Where("rated_user_id = ?", u.ID).Select("COALESCE(AVG(overall),0)").Scan(&avg)
-		u.OverallRating = math.Round(avg*10) / 10
-		u.RatingsCount = int(count)
+	type ratingAgg struct {
+		Count int64   `gorm:"column:count"`
+		Avg   float64 `gorm:"column:avg"`
+	}
+	var agg ratingAgg
+	_ = s.db.Model(&models.PlayerRating{}).
+		Where("rated_user_id = ?", u.ID).
+		Select("COUNT(*) as count, COALESCE(AVG(overall), 0) as avg").
+		Scan(&agg)
+	if agg.Count > 0 {
+		u.OverallRating = math.Round(agg.Avg*10) / 10
+		u.RatingsCount = int(agg.Count)
 
 		type attrAvg struct {
 			Attribute string  `gorm:"column:attribute"`

@@ -156,18 +156,20 @@ func (s *Server) CreateMatch(c *gin.Context) {
 		if pollID != uuid.Nil {
 			var inVotes []models.PollVote
 			if s.db.Where("poll_id = ? AND option = 'IN'", pollID).Find(&inVotes).Error == nil && len(inVotes) > 0 {
-				for _, v := range inVotes {
-					att := models.Attendance{
+				now := time.Now()
+				atts := make([]models.Attendance, len(inVotes))
+				for i, v := range inVotes {
+					atts[i] = models.Attendance{
 						MatchID:     m.ID,
 						UserID:      v.UserID,
 						Status:      "GOING",
-						RespondedAt: time.Now(),
+						RespondedAt: now,
 					}
-					s.db.Clauses(clause.OnConflict{
-						Columns:   []clause.Column{{Name: "match_id"}, {Name: "user_id"}},
-						DoUpdates: clause.AssignmentColumns([]string{"status", "responded_at"}),
-					}).Create(&att)
 				}
+				s.db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "match_id"}, {Name: "user_id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"status", "responded_at"}),
+				}).Create(&atts)
 			}
 			s.db.Where("poll_id = ?", pollID).Delete(&models.PollVote{})
 			s.db.Where("id = ?", pollID).Delete(&models.Poll{})
@@ -197,13 +199,26 @@ func (s *Server) ListGroupMatches(c *gin.Context) {
 	}
 	var msx []models.Match
 	s.db.Where("group_id=?", gid).Order("scheduled_at DESC").Find(&msx)
+	var missingVenueIDs []uuid.UUID
 	for i := range msx {
 		if msx[i].VenueID != nil && msx[i].Venue == "" {
-			var v models.Venue
-			if s.db.First(&v, *msx[i].VenueID).Error == nil {
-				msx[i].Venue = v.Name
-				if msx[i].VenueMapURL == "" {
-					msx[i].VenueMapURL = v.GoogleMapsURL
+			missingVenueIDs = append(missingVenueIDs, *msx[i].VenueID)
+		}
+	}
+	if len(missingVenueIDs) > 0 {
+		var venues []models.Venue
+		s.db.Where("id IN ?", missingVenueIDs).Find(&venues)
+		venueMap := make(map[uuid.UUID]models.Venue, len(venues))
+		for _, v := range venues {
+			venueMap[v.ID] = v
+		}
+		for i := range msx {
+			if msx[i].VenueID != nil && msx[i].Venue == "" {
+				if v, ok := venueMap[*msx[i].VenueID]; ok {
+					msx[i].Venue = v.Name
+					if msx[i].VenueMapURL == "" {
+						msx[i].VenueMapURL = v.GoogleMapsURL
+					}
 				}
 			}
 		}
