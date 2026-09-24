@@ -1,0 +1,26 @@
+name: Keep Backend Awake
+
+on:
+  schedule:
+    # 8:00 AM to 11:00 PM IST (02:30 UTC to 17:30 UTC)
+    # Runs roughly every 14 minutes to stay under the 15-min inactivity timeout
+    - cron: "30,44,58 2 * * *" # 08:00, 08:14, 08:28 IST
+    - cron: "*/14 3-16 * * *" # 08:30 to 22:26 IST (every 14 min)
+    - cron: "0,14,28 17 * * *" # 22:30, 22:44, 22:58 IST
+  workflow_dispatch: # Allows triggering manually via GitHub Actions UI
+
+jobs:
+  ping:
+    name: Ping Health Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend Endpoint
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          TARGET_URL="${BACKEND_URL:-https://squadupbe.onrender.com/health}"
+          echo "Sending ping to: $TARGET_URL at $(date -u)"
+
+          # Render free tier cold start may take 30-60s on the first ping of the day.
+          # Allow up to 90s timeout with retries.
+          curl -fsS --max-time 90 --retry 2 --retry-delay 5 "$TARGET_URL" || echo "Backend ping returned error or timed out during wake-up"
