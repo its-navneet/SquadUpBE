@@ -2,25 +2,48 @@ name: Keep Backend Awake
 
 on:
   schedule:
-    # 8:00 AM to 11:00 PM IST (02:30 UTC to 17:30 UTC)
-    # Runs roughly every 14 minutes to stay under the 15-min inactivity timeout
-    - cron: "30,44,58 2 * * *" # 08:00, 08:14, 08:28 IST
-    - cron: "*/14 3-16 * * *" # 08:30 to 22:26 IST (every 14 min)
-    - cron: "0,14,28 17 * * *" # 22:30, 22:44, 22:58 IST
+    # 7:30 AM to 12:00 AM IST (02:00 UTC to 18:30 UTC)
+    # Runs every 10 minutes (to safely stay well under Render's 15-minute inactivity spin-down)
+    - cron: "*/10 2-18 * * *"
   workflow_dispatch: # Allows triggering manually via GitHub Actions UI
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/keep-awake.yml"
 
 jobs:
   ping:
     name: Ping Health Check
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Backend Endpoint
+      - name: Ping Backend Health Endpoint
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
-          TARGET_URL="${BACKEND_URL:-https://squadupbe.onrender.com/health}"
-          echo "Sending ping to: $TARGET_URL at $(date -u)"
+          RAW_URL="${BACKEND_URL:-https://squadupbe.onrender.com}"
+          RAW_URL=$(echo "$RAW_URL" | xargs)
+          # Strip trailing slashes, /api, or /health so it always resolves to /health
+          RAW_URL="${RAW_URL%/}"
+          RAW_URL="${RAW_URL%/api}"
+          RAW_URL="${RAW_URL%/health}"
+          TARGET_URL="${RAW_URL}/health"
+
+          echo "Target health URL: $TARGET_URL"
+          echo "Ping started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
           # Render free tier cold start may take 30-60s on the first ping of the day.
           # Allow up to 90s timeout with retries.
-          curl -fsS --max-time 90 --retry 2 --retry-delay 5 "$TARGET_URL" || echo "Backend ping returned error or timed out during wake-up"
+          RESPONSE=$(curl -sS -w "\n%{http_code}" --max-time 90 --retry 2 --retry-delay 5 "$TARGET_URL" || true)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "HTTP Status Code: $HTTP_CODE"
+          echo "Response Body: $BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Backend is awake and healthy! (HTTP $HTTP_CODE)"
+          else
+            echo "Backend ping returned status $HTTP_CODE"
+            exit 1
+          fi

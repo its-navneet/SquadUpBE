@@ -130,7 +130,7 @@ func (s *Server) SetupRouter() *gin.Engine {
 	r.Use(requestID())
 	r.Use(securityHeaders())
 	r.Use(cors(s.cfg.CORSOrigins))
-	r.GET("/health", func(c *gin.Context) {
+	healthHandler := func(c *gin.Context) {
 		redisStatus := "in-memory-fallback"
 		if s.redisClient != nil && s.redisClient.IsAvailable() {
 			redisStatus = "connected"
@@ -139,10 +139,16 @@ func (s *Server) SetupRouter() *gin.Engine {
 			"status": "ok",
 			"redis":  redisStatus,
 		})
-	})
+	}
+	r.GET("/health", healthHandler)
+	r.HEAD("/health", healthHandler)
+	r.GET("/", healthHandler)
+	r.HEAD("/", healthHandler)
 	r.Static("/uploads", "./uploads")
 
 	apiGroup := r.Group("/api")
+	apiGroup.GET("/health", healthHandler)
+	apiGroup.HEAD("/health", healthHandler)
 	if s.apiLimiter != nil {
 		apiGroup.Use(s.apiLimiter.Middleware(limiter.UserOrIPKeyExtractor))
 	}
