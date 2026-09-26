@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -248,20 +249,41 @@ func IPKeyExtractor(c *gin.Context) string {
 	return "ip:" + c.ClientIP()
 }
 
-// UserOrIPKeyExtractor extracts userID if authenticated, otherwise client IP.
+// UserOrIPKeyExtractor extracts userID or token if authenticated.
+// Unauthenticated requests return an empty string to remove IP restrictions.
 func UserOrIPKeyExtractor(c *gin.Context) string {
 	if v, exists := c.Get("userID"); exists {
 		if uid, ok := v.(string); ok && uid != "" {
 			return "user:" + uid
 		}
 	}
-	return "ip:" + c.ClientIP()
+	h := c.GetHeader("Authorization")
+	if strings.HasPrefix(h, "Bearer ") {
+		tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		if tok != "" {
+			return "tok:" + tok
+		}
+	}
+	if q := strings.TrimSpace(c.Query("token")); q != "" {
+		return "tok:" + q
+	}
+	return ""
+}
+
+// UserKeyExtractor extracts userID or token if authenticated. Returns empty if unauthenticated (no IP restriction).
+func UserKeyExtractor(c *gin.Context) string {
+	return UserOrIPKeyExtractor(c)
 }
 
 // Middleware creates a Gin middleware that enforces rate limiting per key.
+// If the key is empty (no identifier / IP restrictions removed), rate limiting is bypassed.
 func (l *Limiter) Middleware(extractor KeyExtractor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := extractor(c)
+		if key == "" {
+			c.Next()
+			return
+		}
 		allowed, retryAfter := l.Allow(key)
 		if !allowed {
 			retrySeconds := int(math.Ceil(retryAfter.Seconds()))

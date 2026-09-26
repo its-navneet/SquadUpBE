@@ -153,19 +153,12 @@ func (s *Server) SetupRouter() *gin.Engine {
 		apiGroup.Use(s.apiLimiter.Middleware(limiter.UserOrIPKeyExtractor))
 	}
 
-	var authLimitMiddleware gin.HandlerFunc
-	if s.authLimiter != nil {
-		authLimitMiddleware = s.authLimiter.Middleware(limiter.IPKeyExtractor)
-	} else {
-		authLimitMiddleware = func(c *gin.Context) { c.Next() }
-	}
-
-	// Public routes
+	// Public routes (no IP restrictions)
 	apiGroup.GET("/matches/:id/poster-image", s.ServePosterImage)
-	apiGroup.POST("/upload/image", authLimitMiddleware, s.UploadImage)
-	apiGroup.POST("/auth/register", authLimitMiddleware, s.Register)
-	apiGroup.POST("/auth/login", authLimitMiddleware, s.Login)
-	apiGroup.POST("/auth/reset-password", authLimitMiddleware, s.ResetPassword)
+	apiGroup.POST("/upload/image", s.UploadImage)
+	apiGroup.POST("/auth/register", s.Register)
+	apiGroup.POST("/auth/login", s.Login)
+	apiGroup.POST("/auth/reset-password", s.ResetPassword)
 
 	// Authenticated routes
 	sec := apiGroup.Group("")

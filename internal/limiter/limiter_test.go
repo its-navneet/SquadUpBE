@@ -118,3 +118,72 @@ func TestLimiter_Middleware(t *testing.T) {
 		t.Fatalf("expected Retry-After header to be set")
 	}
 }
+
+func TestLimiter_Middleware_BypassEmptyKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	// Strict limiter: 1 token capacity, burst of 1
+	l := New(1.0, 1, 0, time.Minute)
+	defer l.Stop()
+
+	// Extractor returns empty string (simulating unauthenticated client with IP restriction removed)
+	emptyExtractor := func(c *gin.Context) string {
+		return ""
+	}
+
+	r.Use(l.Middleware(emptyExtractor))
+	r.GET("/unrestricted", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	// Fire multiple requests - none should be rate limited or blocked
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/unrestricted", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d was restricted (status %d), expected 200 OK", i+1, w.Code)
+		}
+	}
+}
+
+func TestLimiter_UserOrIPKeyExtractor_NoIPRestriction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Case 1: Unauthenticated request -> should return empty string (no IP restriction)
+	c1, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c1.Request = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	c1.Request.RemoteAddr = "192.168.1.100:1234"
+	if key := UserOrIPKeyExtractor(c1); key != "" {
+		t.Fatalf("expected empty key for unauthenticated request without IP restriction, got %q", key)
+	}
+
+	// Case 2: Authenticated via userID in context -> should return "user:<uid>"
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	c2.Set("userID", "user-uuid-1234")
+	if key := UserOrIPKeyExtractor(c2); key != "user:user-uuid-1234" {
+		t.Fatalf("expected 'user:user-uuid-1234', got %q", key)
+	}
+
+	// Case 3: Authenticated via Bearer token in header -> should return "tok:<token>"
+	c3, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c3.Request = httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	c3.Request.Header.Set("Authorization", "Bearer sample-jwt-token")
+	if key := UserOrIPKeyExtractor(c3); key != "tok:sample-jwt-token" {
+		t.Fatalf("expected 'tok:sample-jwt-token', got %q", key)
+	}
+
+	// Case 4: Authenticated via token query parameter -> should return "tok:<token>"
+	c4, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c4.Request = httptest.NewRequest(http.MethodGet, "/api/test?token=query-jwt-token", nil)
+	if key := UserOrIPKeyExtractor(c4); key != "tok:query-jwt-token" {
+		t.Fatalf("expected 'tok:query-jwt-token', got %q", key)
+	}
+
+	// Case 5: UserKeyExtractor behaves identically
+	if key := UserKeyExtractor(c1); key != "" {
+		t.Fatalf("expected empty key from UserKeyExtractor, got %q", key)
+	}
+}
